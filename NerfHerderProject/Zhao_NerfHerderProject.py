@@ -1,4 +1,4 @@
-
+import os
 
 def Funct1(): # Calculating the sentiment score of a single word from the user using movie reviews
 
@@ -120,6 +120,15 @@ def Funct3(): # Finding the highest and lowest scoring words in a file using mov
 def main(): #  Asks the user to pick 1 out of the 4 options, 3 of which are the functions
                 # I defined previously and the last option is to exit the code.
 
+
+    cwd = os.getcwd()       #change the file location so that text files such as movieReviews.txt and word.txt is visible 
+
+    changeDirectory = cwd+ "\\NerfHerderProject"
+
+    os.chdir(changeDirectory)
+
+
+
     userinput = 0
     while userinput != 4:
         userinput = input("""
@@ -130,8 +139,7 @@ What would you like to do?
 4.  Exit the program
 Enter a number 1-4: """)
 
-        userinput = int(userinput)
-
+        userinput = int(userinput)  
 
         if userinput == 1:
             Funct1()
