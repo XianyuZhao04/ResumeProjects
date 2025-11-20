@@ -1,6 +1,5 @@
 __pycache__/
 *.py[cod]
-*.html
 venv/
 env/
 .DS_Store

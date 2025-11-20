@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>🏸 Court Availability</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 0;
+            padding-bottom: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px 15px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .header .subtitle {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .controls {
+            padding: 15px;
+        }
+
+        .btn {
+            background: white;
+            color: #667eea;
+            border: none;
+            padding: 16px 24px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn.refresh {
+            background: #48bb78;
+            color: white;
+        }
+
+        .status {
+            text-align: center;
+            color: white;
+            font-size: 14px;
+            padding: 10px 15px;
+            min-height: 20px;
+        }
+
+        .results {
+            padding: 0 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .website-card {
+            background: white;
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }
+
+        .website-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .website-name {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            flex: 1;
+        }
+
+        .website-status {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-success {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .status-error {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .website-url {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 12px;
+            margin-top: 5px;
+            display: block;
+            word-break: break-all;
+        }
+
+        .courts-list {
+            margin-top: 10px;
+        }
+
+        .court-item {
+            display: flex;
+            align-items: center;
+            padding: 14px;
+            margin-bottom: 10px;
+            border-radius: 10px;
+            background: #f7fafc;
+        }
+
+        .court-status {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            margin-right: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .status-available {
+            background: #c6f6d5;
+        }
+
+        .status-unavailable {
+            background: #fed7d7;
+        }
+
+        .court-name {
+            flex: 1;
+            font-weight: 500;
+            color: #333;
+            font-size: 16px;
+        }
+
+        .no-courts {
+            text-align: center;
+            padding: 30px 20px;
+            color: #999;
+            font-style: italic;
+            font-size: 14px;
+        }
+
+        .timestamp {
+            text-align: center;
+            color: white;
+            margin-top: 20px;
+            padding: 0 15px;
+            font-size: 12px;
+            opacity: 0.9;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: white;
+            padding: 60px 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏸 Court Availability</h1>
+        <div class="subtitle">Check availability from multiple sources</div>
+    </div>
+
+    <div class="controls">
+        <button class="btn refresh" onclick="refreshData()">🔄 Refresh Now</button>
+        <div class="status" id="status">Ready to check</div>
+    </div>
+
+    <div class="results" id="results">
+        <div class="empty-state">
+            <h2>👆 Tap Refresh</h2>
+            <p>Get the latest court availability</p>
+        </div>
+    </div>
+
+    <div class="timestamp" id="timestamp"></div>
+
+    <script>
+        function updateStatus(text, className = '') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = text;
+            statusEl.className = 'status ' + className;
+        }
+
+        function formatTimestamp(isoString) {
+            if (!isoString) return '';
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function renderResults(data) {
+            const resultsEl = document.getElementById('results');
+            const timestampEl = document.getElementById('timestamp');
+
+            if (!data || !data.success) {
+                resultsEl.innerHTML = `
+                <div class="website-card">
+                    <div class="website-header">
+                        <div class="website-name">❌ Error</div>
+                    </div>
+                    <div class="no-courts">${data?.error || 'Unknown error'}</div>
+                </div>
+            `;
+                return;
+            }
+
+            timestampEl.textContent = `Last updated: ${formatTimestamp(data.timestamp)}`;
+
+            if (!data.data || data.data.length === 0) {
+                resultsEl.innerHTML = `
+                <div class="website-card">
+                    <div class="website-header">
+                        <div class="website-name">⚠️ No Websites</div>
+                    </div>
+                    <div class="no-courts">Please update config.json</div>
+                </div>
+            `;
+                return;
+            }
+
+            resultsEl.innerHTML = data.data.map(result => {
+                const statusClass = result.status === 'success' ? 'status-success' : 'status-error';
+                const statusText = result.status === 'success' ? '✓ Connected' : '✗ Error';
+
+                const courtsHtml = result.courts && result.courts.length > 0
+                    ? result.courts.map(court => {
+                        const available = court.available;
+                        const statusClass = available ? 'status-available' : 'status-unavailable';
+                        const statusIcon = available ? '✅' : '🔒';
+                        return `
+                            <div class="court-item">
+                                <div class="court-status ${statusClass}">${statusIcon}</div>
+                                <div class="court-name">${court.name || 'Unknown Court'}</div>
+                            </div>
+                        `;
+                    }).join('')
+                    : '<div class="no-courts">✅ No reservations found - court is available!</div>';
+
+                return `
+                    <div class="website-card">
+                        <div class="website-header">
+                            <div style="flex: 1;">
+                                <div class="website-name">📍 ${result.website}</div>
+                                <a href="${result.url}" target="_blank" class="website-url">${result.url}</a>
+                            </div>
+                            <div class="website-status ${statusClass}">${statusText}</div>
+                        </div>
+                        <div class="courts-list">${courtsHtml}</div>
+                        ${result.message ? `<div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0; color: #666; font-size: 12px;">${result.message}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function refreshData() {
+            updateStatus('🔄 Loading...', 'loading');
+            try {
+                const response = await fetch('/api/availability');
+                const data = await response.json();
+                renderResults(data);
+                updateStatus('✓ Updated', 'success');
+                setTimeout(() => updateStatus('Ready to check', ''), 2000);
+            } catch (error) {
+                updateStatus('✗ Error: ' + error.message, 'error');
+            }
+        }
+
+        // Auto-load on page load
+        window.addEventListener('load', refreshData);
+        
+        // Auto-refresh every 30 seconds only if page is visible and data has been loaded
+        let dataLoaded = false;
+        const originalRefreshData = refreshData;
+        refreshData = async function() {
+            const result = await originalRefreshData();
+            dataLoaded = true;
+            return result;
+        };
+        
+        setInterval(() => {
+            if (!document.hidden && dataLoaded) {
+                refreshData();
+            }
+        }, 30000);
+
+        // Shutdown server when browser tab closes or becomes hidden
+        let shutdownSent = false;
+        function sendShutdown() {
+            if (!shutdownSent) {
+                shutdownSent = true;
+                // Use sendBeacon for reliable delivery even if page is closing
+                navigator.sendBeacon('/api/shutdown', '');
+            }
+        }
+
+        window.addEventListener('beforeunload', sendShutdown);
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                // Wait a bit, then shutdown if still hidden
+                setTimeout(() => {
+                    if (document.hidden) {
+                        sendShutdown();
+                    }
+                }, 10000); // 10 seconds after tab becomes hidden
+            }
+        });
+    </script>
+</body>
+</html>
