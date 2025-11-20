@@ -1,0 +1,17 @@
+{
+  "websites": [
+    {
+      "name": "Court 610A",
+      "url": "https://pitt.emscloudservice.com/web/LocationDetails.aspx?data=YOUR_URL_DATA_HERE",
+      "enabled": true
+    },
+    {
+      "name": "Court 610B",
+      "url": "https://pitt.emscloudservice.com/web/LocationDetails.aspx?data=YOUR_URL_DATA_HERE",
+      "enabled": true
+    }
+  ]
+}
+
+
+
