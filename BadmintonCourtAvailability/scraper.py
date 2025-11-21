@@ -250,7 +250,7 @@ class CourtAvailabilityScraper:
                                 driver.execute_script("arguments[0].click();", availability_tab)
                             except:
                                 availability_tab.click()
-                            time.sleep(1.5)  # Wait for tab content to load
+                            time.sleep(1.0)  # Wait for tab content to load
             
                             # Verify the tab was actually clicked by checking if calendar is visible
                             try:
@@ -261,7 +261,7 @@ class CourtAvailabilityScraper:
                                     tab_clicked = True
                                 else:
                                     # Wait a bit more and check again
-                                    time.sleep(1.5)
+                                    time.sleep(1.0)
                                     is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
                                     if is_active:
                                         tab_clicked = True
@@ -516,14 +516,14 @@ class CourtAvailabilityScraper:
                 pass
             
             # Give time for events to load via AJAX
-            time.sleep(2.0)
+            time.sleep(1.5)
             
             # Scroll to calendar area to trigger lazy loading if needed
             try:
                 _ = driver.current_url  # Validate session
                 calendar_element = driver.find_element(By.ID, "room-availability-control")
                 driver.execute_script("arguments[0].scrollIntoView(true);", calendar_element)
-                time.sleep(1.0)  # Wait after scrolling
+                time.sleep(0.8)  # Wait after scrolling
             except Exception as e:
                 error_str = str(e).lower()
                 if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -538,7 +538,7 @@ class CourtAvailabilityScraper:
             # Events may load asynchronously via AJAX, so wait a bit
             try:
                 _ = driver.current_url  # Validate session
-                WebDriverWait(driver, 5).until(
+                WebDriverWait(driver, 3).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "v-b-event"))
                 )
             except Exception as e:
@@ -551,10 +551,10 @@ class CourtAvailabilityScraper:
                         raise
                 # No events found - might be fully available or still loading
                 # Give a bit more time for AJAX to complete
-                time.sleep(1.5)
+                time.sleep(1.0)
             
             # One more short wait to ensure everything is rendered
-            time.sleep(0.5)
+            time.sleep(0.3)
             
             # Get the rendered HTML - check session first
             try:
@@ -1391,8 +1391,14 @@ class CourtAvailabilityScraper:
         results = [None] * len(self.config['websites'])
         threads = []
         
-        def scrape_worker(index: int, url: str, max_retries=2):
+        def scrape_worker(index: int, url: str, max_retries=1):
             """Worker function to scrape a single website with retries."""
+            # Use fewer retries in cloud to avoid timeouts
+            import os
+            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+            if is_cloud:
+                max_retries = 0  # No retries in cloud to save time
+            
             result = None
             for attempt in range(max_retries + 1):
                 try:
@@ -1442,8 +1448,11 @@ class CourtAvailabilityScraper:
             thread.start()
             threads.append((thread, i, site_config))
         
-        # Wait for all threads to complete with timeout (60 seconds per thread)
-        timeout = 60
+        # Wait for all threads to complete with timeout
+        # Use shorter timeout for cloud hosting to avoid hitting platform limits
+        import os
+        is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+        timeout = 40 if is_cloud else 60  # 40s for cloud, 60s for local
         for thread, index, site_config in threads:
             thread.join(timeout=timeout)
             if thread.is_alive():

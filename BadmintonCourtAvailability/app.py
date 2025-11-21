@@ -36,8 +36,9 @@ def get_est_timestamp():
 
 app = Flask(__name__)
 scraper = None
+# Activity tracking only used for local development
 last_activity = time.time()
-shutdown_delay = 300  # 5 minutes of inactivity
+shutdown_delay = 300  # 5 minutes of inactivity (only used locally)
 
 def get_local_ip():
     """Get the local IP address for accessing from phone."""
@@ -124,7 +125,12 @@ def get_availability():
 
 @app.route('/api/shutdown', methods=['POST'])
 def shutdown():
-    """Shutdown endpoint called when browser closes."""
+    """Shutdown endpoint called when browser closes (only works locally, not in cloud)."""
+    # Only allow shutdown if running locally (not in cloud)
+    is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+    if is_cloud:
+        return jsonify({'success': False, 'message': 'Shutdown disabled in cloud hosting'}), 403
+    
     def shutdown_server():
         time.sleep(2)  # Give time for response to be sent
         os._exit(0)

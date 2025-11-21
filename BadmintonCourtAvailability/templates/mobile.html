@@ -321,27 +321,32 @@
             }
         }, 30000);
 
-        // Shutdown server when browser tab closes or becomes hidden
-        let shutdownSent = false;
-        function sendShutdown() {
-            if (!shutdownSent) {
-                shutdownSent = true;
-                // Use sendBeacon for reliable delivery even if page is closing
-                navigator.sendBeacon('/api/shutdown', '');
+        // Shutdown server when browser tab closes (only for local development)
+        // Disabled in cloud hosting to allow multiple users
+        const isCloudHosting = window.location.hostname !== 'localhost' && !window.location.hostname.match(/^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./);
+        
+        if (!isCloudHosting) {
+            let shutdownSent = false;
+            function sendShutdown() {
+                if (!shutdownSent) {
+                    shutdownSent = true;
+                    // Use sendBeacon for reliable delivery even if page is closing
+                    navigator.sendBeacon('/api/shutdown', '');
+                }
             }
-        }
 
-        window.addEventListener('beforeunload', sendShutdown);
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                // Wait a bit, then shutdown if still hidden
-                setTimeout(() => {
-                    if (document.hidden) {
-                        sendShutdown();
-                    }
-                }, 10000); // 10 seconds after tab becomes hidden
-            }
-        });
+            window.addEventListener('beforeunload', sendShutdown);
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    // Wait a bit, then shutdown if still hidden
+                    setTimeout(() => {
+                        if (document.hidden) {
+                            sendShutdown();
+                        }
+                    }, 10000); // 10 seconds after tab becomes hidden
+                }
+            });
+        }
     </script>
 </body>
 </html>
