@@ -158,12 +158,22 @@ class CourtAvailabilityScraper:
                         service = Service(ChromeDriverManager().install())
                         driver = webdriver.Chrome(service=service, options=options)
                         # Set timeouts to prevent hanging
-                        # Shorter timeout in cloud
+                        # In background mode (use_timeout=False), use much longer timeouts
                         import os
                         is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                        timeout = 15 if is_cloud else 30
+                        if not use_timeout:
+                            # Background mode: very long timeouts (5 minutes)
+                            timeout = 300
+                            implicit_wait = 10
+                        else:
+                            # Normal mode: shorter timeout in cloud
+                            timeout = 15 if is_cloud else 30
+                            implicit_wait = 5
                         driver.set_page_load_timeout(timeout)
-                        driver.implicitly_wait(5)
+                        driver.implicitly_wait(implicit_wait)
+                        # Also set script timeout for background mode
+                        if not use_timeout:
+                            driver.set_script_timeout(300)  # 5 minutes for scripts
                     except Exception as wdm_error:
                         # If webdriver-manager fails (e.g., corrupted cache), try clearing cache and retrying
                         if "zip" in str(wdm_error).lower() or "not a zip" in str(wdm_error).lower():
@@ -175,38 +185,66 @@ class CourtAvailabilityScraper:
                                 # Retry installation
                                 service = Service(ChromeDriverManager().install())
                                 driver = webdriver.Chrome(service=service, options=options)
-                                # Shorter timeout in cloud
+                                # Set timeouts based on mode
                                 import os
                                 is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                                timeout = 15 if is_cloud else 30
+                                if not use_timeout:
+                                    timeout = 300
+                                    implicit_wait = 10
+                                else:
+                                    timeout = 15 if is_cloud else 30
+                                    implicit_wait = 5
                                 driver.set_page_load_timeout(timeout)
-                                driver.implicitly_wait(5)
+                                driver.implicitly_wait(implicit_wait)
+                                if not use_timeout:
+                                    driver.set_script_timeout(300)
                             except Exception as retry_error:
                                 # If retry fails, fall back to system ChromeDriver
                                 driver = webdriver.Chrome(options=options)
-                                # Shorter timeout in cloud
+                                # Set timeouts based on mode
                                 import os
                                 is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                                timeout = 15 if is_cloud else 30
+                                if not use_timeout:
+                                    timeout = 300
+                                    implicit_wait = 10
+                                else:
+                                    timeout = 15 if is_cloud else 30
+                                    implicit_wait = 5
                                 driver.set_page_load_timeout(timeout)
-                                driver.implicitly_wait(5)
+                                driver.implicitly_wait(implicit_wait)
+                                if not use_timeout:
+                                    driver.set_script_timeout(300)
                         else:
                             # For other errors, fall back to system ChromeDriver
                             driver = webdriver.Chrome(options=options)
-                            # Shorter timeout in cloud
+                            # Set timeouts based on mode
                             import os
                             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                            timeout = 15 if is_cloud else 30
+                            if not use_timeout:
+                                timeout = 300
+                                implicit_wait = 10
+                            else:
+                                timeout = 15 if is_cloud else 30
+                                implicit_wait = 5
                             driver.set_page_load_timeout(timeout)
-                            driver.implicitly_wait(5)
+                            driver.implicitly_wait(implicit_wait)
+                            if not use_timeout:
+                                driver.set_script_timeout(300)
             except ImportError:
                 # Fall back to system ChromeDriver if webdriver-manager not available
                 driver = webdriver.Chrome(options=options)
                 import os
                 is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                timeout = 15 if is_cloud else 30
+                if not use_timeout:
+                    timeout = 300
+                    implicit_wait = 10
+                else:
+                    timeout = 15 if is_cloud else 30
+                    implicit_wait = 5
                 driver.set_page_load_timeout(timeout)
-                driver.implicitly_wait(5)
+                driver.implicitly_wait(implicit_wait)
+                if not use_timeout:
+                    driver.set_script_timeout(300)
             
             # Validate driver before proceeding
             try:
@@ -220,10 +258,13 @@ class CourtAvailabilityScraper:
             try:
                 # Check if session is still valid
                 _ = driver.current_url
-                # Use shorter timeout since we're using eager page load strategy
+                # Use timeout based on mode
                 import os
                 is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                page_load_timeout = 3 if is_cloud else 5
+                if not use_timeout:
+                    page_load_timeout = 30  # Longer wait in background mode
+                else:
+                    page_load_timeout = 3 if is_cloud else 5
                 WebDriverWait(driver, page_load_timeout).until(
                     lambda d: d.execute_script('return document.readyState') in ['complete', 'interactive']
                 )
