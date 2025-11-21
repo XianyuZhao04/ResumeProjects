@@ -10,6 +10,7 @@ import socket
 import threading
 import time
 import sys
+from functools import wraps
 
 def get_est_timestamp():
     """Get current timestamp in EST timezone."""
@@ -102,7 +103,50 @@ def simple():
     </html>
     """
 
+def timeout_handler(timeout_seconds=30):
+    """Decorator to handle timeouts for API endpoints."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            import signal
+            
+            # Check if we're in cloud (timeout handling needed)
+            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+            if not is_cloud:
+                # Local: no timeout needed
+                return func(*args, **kwargs)
+            
+            # Cloud: use threading timeout
+            result = [None]
+            exception = [None]
+            
+            def target():
+                try:
+                    result[0] = func(*args, **kwargs)
+                except Exception as e:
+                    exception[0] = e
+            
+            thread = threading.Thread(target=target, daemon=True)
+            thread.start()
+            thread.join(timeout=timeout_seconds)
+            
+            if thread.is_alive():
+                # Timeout occurred
+                return jsonify({
+                    'success': False,
+                    'error': f'Request timed out after {timeout_seconds} seconds',
+                    'timestamp': get_est_timestamp()
+                }), 504  # Gateway Timeout
+            
+            if exception[0]:
+                raise exception[0]
+            
+            return result[0]
+        return wrapper
+    return decorator
+
 @app.route('/api/availability')
+@timeout_handler(timeout_seconds=28)  # 28s to stay under Render's 30s limit
 def get_availability():
     """API endpoint to get current availability."""
     global scraper
@@ -117,9 +161,14 @@ def get_availability():
             'timestamp': get_est_timestamp()
         })
     except Exception as e:
+        import traceback
+        error_msg = str(e)
+        # Log the full traceback for debugging
+        print(f"Error in get_availability: {error_msg}", flush=True)
+        print(traceback.format_exc(), flush=True)
         return jsonify({
             'success': False,
-            'error': str(e),
+            'error': error_msg,
             'timestamp': get_est_timestamp()
         }), 500
 
