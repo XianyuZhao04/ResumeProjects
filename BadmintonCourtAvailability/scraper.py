@@ -574,52 +574,54 @@ class CourtAvailabilityScraper:
                 scroll_wait = 0.2 if is_cloud else 0.8  # Very short in cloud
                 time.sleep(scroll_wait)
                 
-                # Try to scroll calendar horizontally to find today's date
-                # The calendar might start showing future dates, so we need to scroll left
-                try:
-                    # Get today's date info
-                    import os
-                    is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                    from zoneinfo import ZoneInfo
+                # In cloud: skip scrolling to today to save time - just parse whatever is visible
+                # In local: try to scroll to today for better accuracy
+                if not is_cloud:
+                    # Try to scroll calendar horizontally to find today's date
+                    # The calendar might start showing future dates, so we need to scroll left
                     try:
-                        est = ZoneInfo("America/New_York")
-                        today = datetime.now(est)
-                    except:
-                        import pytz
-                        est_tz = pytz.timezone('America/New_York')
-                        today = datetime.now(est_tz)
-                    
-                    today_day_num = today.day
-                    today_day_name_short = today.strftime('%a')  # e.g., "Thu"
-                    
-                    # Try to find today's date column and scroll to it
-                    date_elements = driver.find_elements(By.CLASS_NAME, "v-b-date")
-                    found_today = False
-                    for date_elem in date_elements[:10]:  # Check first 10 dates
+                        # Get today's date info
+                        from zoneinfo import ZoneInfo
                         try:
-                            date_span = date_elem.find_element(By.CSS_SELECTOR, "span[aria-hidden='true']")
-                            date_text = date_span.text if date_span else ""
-                            if str(today_day_num) in date_text and today_day_name_short in date_text:
-                                # Found today! Scroll it into view
-                                driver.execute_script("arguments[0].scrollIntoView({block: 'nearest', inline: 'center'});", date_elem)
-                                wait_after_scroll = 0.3 if is_cloud else 1.5  # Very short in cloud
-                                time.sleep(wait_after_scroll)  # Wait for events to load after scrolling
-                                found_today = True
-                                break
+                            est = ZoneInfo("America/New_York")
+                            today = datetime.now(est)
                         except:
-                            continue
-                    
-                    # If today not found in visible dates, try scrolling the calendar container
-                    if not found_today:
-                        # Scroll the calendar container left to find today
-                        driver.execute_script("""
-                            var container = arguments[0];
-                            container.scrollLeft = 0;
-                        """, calendar_element)
-                        wait_after_scroll = 0.3 if is_cloud else 1.5  # Very short in cloud
-                        time.sleep(wait_after_scroll)  # Wait for events to load after scrolling
-                except:
-                    pass  # If scrolling fails, continue anyway
+                            import pytz
+                            est_tz = pytz.timezone('America/New_York')
+                            today = datetime.now(est_tz)
+                        
+                        today_day_num = today.day
+                        today_day_name_short = today.strftime('%a')  # e.g., "Thu"
+                        
+                        # Try to find today's date column and scroll to it
+                        date_elements = driver.find_elements(By.CLASS_NAME, "v-b-date")
+                        found_today = False
+                        for date_elem in date_elements[:10]:  # Check first 10 dates
+                            try:
+                                date_span = date_elem.find_element(By.CSS_SELECTOR, "span[aria-hidden='true']")
+                                date_text = date_span.text if date_span else ""
+                                if str(today_day_num) in date_text and today_day_name_short in date_text:
+                                    # Found today! Scroll it into view
+                                    driver.execute_script("arguments[0].scrollIntoView({block: 'nearest', inline: 'center'});", date_elem)
+                                    time.sleep(1.5)  # Wait for events to load after scrolling
+                                    found_today = True
+                                    break
+                            except:
+                                continue
+                        
+                        # If today not found in visible dates, try scrolling the calendar container
+                        if not found_today:
+                            # Scroll the calendar container left to find today
+                            driver.execute_script("""
+                                var container = arguments[0];
+                                container.scrollLeft = 0;
+                            """, calendar_element)
+                            time.sleep(1.5)  # Wait for events to load after scrolling
+                    except:
+                        pass  # If scrolling fails, continue anyway
+                else:
+                    # In cloud: minimal wait after scrolling to calendar
+                    time.sleep(0.2)
             except Exception as e:
                 error_str = str(e).lower()
                 if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -635,19 +637,36 @@ class CourtAvailabilityScraper:
             import os
             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
             
-            # Wait for events to load after scrolling to today (shorter in cloud)
-            events_found = False
-            max_attempts = 2 if is_cloud else 3  # Fewer attempts in cloud
-            for attempt in range(max_attempts):
+            # Wait for events to load (minimal in cloud to save time)
+            if not is_cloud:
+                # Local: proper event detection
+                events_found = False
+                for attempt in range(3):
+                    try:
+                        _ = driver.current_url  # Validate session
+                        events_elements = driver.find_elements(By.CLASS_NAME, "v-b-event")
+                        if events_elements and len(events_elements) > 0:
+                            events_found = True
+                            break
+                        if attempt < 2:  # Don't wait on last attempt
+                            time.sleep(1.5)
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
+                            if retry_count < max_retries:
+                                self._safe_quit_driver(driver)
+                                return self._scrape_with_selenium(url, website_index, retry_count + 1)
+                            else:
+                                raise
+                        if attempt < 2:
+                            time.sleep(1.5)
+                
+                # One more short wait to ensure everything is rendered
+                time.sleep(0.5)
+            else:
+                # Cloud: minimal wait, just check once and move on
                 try:
                     _ = driver.current_url  # Validate session
-                    events_elements = driver.find_elements(By.CLASS_NAME, "v-b-event")
-                    if events_elements and len(events_elements) > 0:
-                        events_found = True
-                        break
-                    if attempt < max_attempts - 1:  # Don't wait on last attempt
-                        wait_time = 0.3 if is_cloud else 1.5  # Very short waits in cloud
-                        time.sleep(wait_time)
                 except Exception as e:
                     error_str = str(e).lower()
                     if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -656,13 +675,8 @@ class CourtAvailabilityScraper:
                             return self._scrape_with_selenium(url, website_index, retry_count + 1)
                         else:
                             raise
-                    if attempt < max_attempts - 1:
-                        wait_time = 0.3 if is_cloud else 1.5
-                        time.sleep(wait_time)
-            
-            # One more short wait to ensure everything is rendered
-            final_wait = 0.1 if is_cloud else 0.5  # Minimal wait in cloud
-            time.sleep(final_wait)
+                # Minimal wait in cloud - events may not be fully loaded, but we'll parse what we can
+                time.sleep(0.2)
             
             # Get the rendered HTML - check session first
             try:
