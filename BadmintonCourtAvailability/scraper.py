@@ -543,13 +543,60 @@ class CourtAvailabilityScraper:
             ajax_wait = 1.0 if is_cloud else 1.5
             time.sleep(ajax_wait)
             
-            # Scroll to calendar area to trigger lazy loading if needed
+            # Scroll to calendar area and try to navigate to today's date
             try:
                 _ = driver.current_url  # Validate session
                 calendar_element = driver.find_element(By.ID, "room-availability-control")
                 driver.execute_script("arguments[0].scrollIntoView(true);", calendar_element)
                 scroll_wait = 0.5 if is_cloud else 0.8
                 time.sleep(scroll_wait)
+                
+                # Try to scroll calendar horizontally to find today's date
+                # The calendar might start showing future dates, so we need to scroll left
+                try:
+                    # Get today's date info
+                    import os
+                    is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                    from zoneinfo import ZoneInfo
+                    try:
+                        est = ZoneInfo("America/New_York")
+                        today = datetime.now(est)
+                    except:
+                        import pytz
+                        est_tz = pytz.timezone('America/New_York')
+                        today = datetime.now(est_tz)
+                    
+                    today_day_num = today.day
+                    today_day_name_short = today.strftime('%a')  # e.g., "Thu"
+                    
+                    # Try to find today's date column and scroll to it
+                    date_elements = driver.find_elements(By.CLASS_NAME, "v-b-date")
+                    found_today = False
+                    for date_elem in date_elements[:10]:  # Check first 10 dates
+                        try:
+                            date_span = date_elem.find_element(By.CSS_SELECTOR, "span[aria-hidden='true']")
+                            date_text = date_span.text if date_span else ""
+                            if str(today_day_num) in date_text and today_day_name_short in date_text:
+                                # Found today! Scroll it into view
+                                driver.execute_script("arguments[0].scrollIntoView({block: 'nearest', inline: 'center'});", date_elem)
+                                wait_after_scroll = 1.0 if is_cloud else 1.5
+                                time.sleep(wait_after_scroll)  # Wait for events to load after scrolling
+                                found_today = True
+                                break
+                        except:
+                            continue
+                    
+                    # If today not found in visible dates, try scrolling the calendar container
+                    if not found_today:
+                        # Scroll the calendar container left to find today
+                        driver.execute_script("""
+                            var container = arguments[0];
+                            container.scrollLeft = 0;
+                        """, calendar_element)
+                        wait_after_scroll = 1.0 if is_cloud else 1.5
+                        time.sleep(wait_after_scroll)  # Wait for events to load after scrolling
+                except:
+                    pass  # If scrolling fails, continue anyway
             except Exception as e:
                 error_str = str(e).lower()
                 if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -564,27 +611,31 @@ class CourtAvailabilityScraper:
             # Events may load asynchronously via AJAX, so wait a bit
             import os
             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-            try:
-                _ = driver.current_url  # Validate session
-                event_wait_timeout = 2 if is_cloud else 3
-                WebDriverWait(driver, event_wait_timeout).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "v-b-event"))
-                )
-            except Exception as e:
-                error_str = str(e).lower()
-                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
-                    if retry_count < max_retries:
-                        self._safe_quit_driver(driver)
-                        return self._scrape_with_selenium(url, website_index, retry_count + 1)
-                    else:
-                        raise
-                # No events found - might be fully available or still loading
-                # Give a bit more time for AJAX to complete (shorter in cloud)
-                ajax_fallback = 0.5 if is_cloud else 1.0
-                time.sleep(ajax_fallback)
+            
+            # Wait longer for events to load after scrolling to today
+            events_found = False
+            for attempt in range(3):  # Try 3 times
+                try:
+                    _ = driver.current_url  # Validate session
+                    events_elements = driver.find_elements(By.CLASS_NAME, "v-b-event")
+                    if events_elements and len(events_elements) > 0:
+                        events_found = True
+                        break
+                    if attempt < 2:  # Don't wait on last attempt
+                        time.sleep(1.0 if is_cloud else 1.5)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
+                        if retry_count < max_retries:
+                            self._safe_quit_driver(driver)
+                            return self._scrape_with_selenium(url, website_index, retry_count + 1)
+                        else:
+                            raise
+                    if attempt < 2:
+                        time.sleep(1.0 if is_cloud else 1.5)
             
             # One more short wait to ensure everything is rendered
-            final_wait = 0.2 if is_cloud else 0.3
+            final_wait = 0.3 if is_cloud else 0.5
             time.sleep(final_wait)
             
             # Get the rendered HTML - check session first
