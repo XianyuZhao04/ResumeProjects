@@ -187,19 +187,25 @@ def refresh_cache_background():
     if not is_cloud:
         return  # Only use caching in cloud
     
+    print("Background cache thread started", flush=True)
+    
     # Initial delay to let app start up
-    time.sleep(5)
+    time.sleep(3)
     
     while True:
         try:
             with cache_lock:
                 cache_building = True
             
+            print("Background: Starting cache build/refresh...", flush=True)
+            
             if scraper is None:
+                print("Background: Creating scraper instance...", flush=True)
                 scraper = CourtAvailabilityScraper()
             
-            print("Background: Starting cache refresh...", flush=True)
+            print("Background: Calling check_all_websites()...", flush=True)
             results = scraper.check_all_websites()
+            print(f"Background: Got results: {len(results) if results else 0} websites", flush=True)
             
             with cache_lock:
                 cached_results = results
@@ -209,12 +215,22 @@ def refresh_cache_background():
             print(f"Background: Cache refreshed successfully at {get_est_timestamp()}", flush=True)
         except Exception as e:
             import traceback
-            print(f"Background: Error refreshing cache: {str(e)}", flush=True)
+            error_msg = str(e)
+            print(f"Background: ERROR refreshing cache: {error_msg}", flush=True)
             print(traceback.format_exc(), flush=True)
             with cache_lock:
                 cache_building = False
+                # Store error in cache so API can return it
+                cached_results = [{
+                    'website': 'Error',
+                    'status': 'error',
+                    'message': f'Cache build failed: {error_msg}',
+                    'timestamp': get_est_timestamp()
+                }]
+                cache_timestamp = time.time()
         
         # Wait before next refresh (refresh every 4 minutes, cache is valid for 5 minutes)
+        print("Background: Waiting 4 minutes before next refresh...", flush=True)
         time.sleep(240)  # 4 minutes
 
 @app.route('/api/availability')
@@ -252,19 +268,42 @@ def get_availability():
                     'refreshing': True
                 })
             
-            # No cache at all - return message that cache is building
-            if cache_building:
-                return jsonify({
-                    'success': False,
-                    'error': 'Cache is being built. Please wait a moment and refresh.',
-                    'timestamp': get_est_timestamp(),
-                    'building': True
-                }), 202  # Accepted - request is being processed
+            # No cache at all - trigger immediate build if not already building
+            if not cache_building:
+                print("API: No cache found, triggering immediate background build...", flush=True)
+                cache_building = True
+                def build_cache_now():
+                    global scraper, cached_results, cache_timestamp, cache_building
+                    try:
+                        print("Immediate build: Starting...", flush=True)
+                        if scraper is None:
+                            scraper = CourtAvailabilityScraper()
+                        results = scraper.check_all_websites()
+                        with cache_lock:
+                            cached_results = results
+                            cache_timestamp = time.time()
+                            cache_building = False
+                        print("Immediate build: Success!", flush=True)
+                    except Exception as e:
+                        import traceback
+                        print(f"Immediate build: ERROR - {str(e)}", flush=True)
+                        print(traceback.format_exc(), flush=True)
+                        with cache_lock:
+                            cache_building = False
+                            cached_results = [{
+                                'website': 'Error',
+                                'status': 'error',
+                                'message': f'Build failed: {str(e)}',
+                                'timestamp': get_est_timestamp()
+                            }]
+                            cache_timestamp = time.time()
+                
+                threading.Thread(target=build_cache_now, daemon=True).start()
             
-            # Cache not building yet - return message
+            # Return message that cache is building
             return jsonify({
                 'success': False,
-                'error': 'Cache is being initialized. Please wait a moment and refresh.',
+                'error': 'Cache is being built. This may take 20-30 seconds. Please wait and refresh.',
                 'timestamp': get_est_timestamp(),
                 'building': True
             }), 202  # Accepted - request is being processed
@@ -315,11 +354,13 @@ if __name__ == '__main__':
         inactivity_thread = threading.Thread(target=check_inactivity, daemon=True)
         inactivity_thread.start()
     else:
-        # In cloud: start background cache refresh thread
+        # In cloud: start background cache refresh thread immediately
+        print("="*60, flush=True)
         print("Starting background cache refresh thread...", flush=True)
         cache_refresh_thread = threading.Thread(target=refresh_cache_background, daemon=True)
         cache_refresh_thread.start()
-        print("Background cache refresh thread started", flush=True)
+        print("Background cache refresh thread started (will begin building cache in 3 seconds)", flush=True)
+        print("="*60, flush=True)
     
     print("\n" + "="*60)
     print("🏸 Badminton Court Availability")
