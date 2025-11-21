@@ -110,7 +110,7 @@ class CourtAvailabilityScraper:
         # Use fewer retries in cloud to avoid timeouts
         import os
         is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-        max_retries = 1 if is_cloud else 3  # Fewer retries in cloud
+        max_retries = 0 if is_cloud else 3  # No retries in cloud to save time
         options = Options()
         options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
@@ -158,7 +158,11 @@ class CourtAvailabilityScraper:
                         service = Service(ChromeDriverManager().install())
                         driver = webdriver.Chrome(service=service, options=options)
                         # Set timeouts to prevent hanging
-                        driver.set_page_load_timeout(30)
+                        # Shorter timeout in cloud
+                        import os
+                        is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                        timeout = 15 if is_cloud else 30
+                        driver.set_page_load_timeout(timeout)
                         driver.implicitly_wait(5)
                     except Exception as wdm_error:
                         # If webdriver-manager fails (e.g., corrupted cache), try clearing cache and retrying
@@ -171,22 +175,37 @@ class CourtAvailabilityScraper:
                                 # Retry installation
                                 service = Service(ChromeDriverManager().install())
                                 driver = webdriver.Chrome(service=service, options=options)
-                                driver.set_page_load_timeout(30)
+                                # Shorter timeout in cloud
+                                import os
+                                is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                                timeout = 15 if is_cloud else 30
+                                driver.set_page_load_timeout(timeout)
                                 driver.implicitly_wait(5)
                             except Exception as retry_error:
                                 # If retry fails, fall back to system ChromeDriver
                                 driver = webdriver.Chrome(options=options)
-                                driver.set_page_load_timeout(30)
+                                # Shorter timeout in cloud
+                                import os
+                                is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                                timeout = 15 if is_cloud else 30
+                                driver.set_page_load_timeout(timeout)
                                 driver.implicitly_wait(5)
                         else:
                             # For other errors, fall back to system ChromeDriver
                             driver = webdriver.Chrome(options=options)
-                            driver.set_page_load_timeout(30)
+                            # Shorter timeout in cloud
+                            import os
+                            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                            timeout = 15 if is_cloud else 30
+                            driver.set_page_load_timeout(timeout)
                             driver.implicitly_wait(5)
             except ImportError:
                 # Fall back to system ChromeDriver if webdriver-manager not available
                 driver = webdriver.Chrome(options=options)
-                driver.set_page_load_timeout(30)
+                import os
+                is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                timeout = 15 if is_cloud else 30
+                driver.set_page_load_timeout(timeout)
                 driver.implicitly_wait(5)
             
             # Validate driver before proceeding
@@ -322,7 +341,11 @@ class CourtAvailabilityScraper:
                                             driver.execute_script("arguments[0].click();", element)
                                         except:
                                             element.click()
-                                        time.sleep(1)  # Reduced from 2s to 1s
+                                        # Shorter wait in cloud
+                                        import os
+                                        is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                                        wait_after_tab = 0.5 if is_cloud else 1.0
+                                        time.sleep(wait_after_tab)
                                         tab_clicked = True
                                         break
                             except:
@@ -354,7 +377,7 @@ class CourtAvailabilityScraper:
                 # Use shorter timeout in cloud
                 import os
                 is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                wait_timeout = 5 if is_cloud else 10
+                wait_timeout = 3 if is_cloud else 10  # Very short in cloud
                 WebDriverWait(driver, wait_timeout).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "v-b-date"))
                 )
@@ -540,7 +563,7 @@ class CourtAvailabilityScraper:
             # Give time for events to load via AJAX (shorter in cloud)
             import os
             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-            ajax_wait = 1.0 if is_cloud else 1.5
+            ajax_wait = 0.5 if is_cloud else 1.5  # Very short in cloud
             time.sleep(ajax_wait)
             
             # Scroll to calendar area and try to navigate to today's date
@@ -612,17 +635,19 @@ class CourtAvailabilityScraper:
             import os
             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
             
-            # Wait longer for events to load after scrolling to today
+            # Wait for events to load after scrolling to today (shorter in cloud)
             events_found = False
-            for attempt in range(3):  # Try 3 times
+            max_attempts = 2 if is_cloud else 3  # Fewer attempts in cloud
+            for attempt in range(max_attempts):
                 try:
                     _ = driver.current_url  # Validate session
                     events_elements = driver.find_elements(By.CLASS_NAME, "v-b-event")
                     if events_elements and len(events_elements) > 0:
                         events_found = True
                         break
-                    if attempt < 2:  # Don't wait on last attempt
-                        time.sleep(1.0 if is_cloud else 1.5)
+                    if attempt < max_attempts - 1:  # Don't wait on last attempt
+                        wait_time = 0.5 if is_cloud else 1.5  # Shorter waits in cloud
+                        time.sleep(wait_time)
                 except Exception as e:
                     error_str = str(e).lower()
                     if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -631,11 +656,12 @@ class CourtAvailabilityScraper:
                             return self._scrape_with_selenium(url, website_index, retry_count + 1)
                         else:
                             raise
-                    if attempt < 2:
-                        time.sleep(1.0 if is_cloud else 1.5)
+                    if attempt < max_attempts - 1:
+                        wait_time = 0.5 if is_cloud else 1.5
+                        time.sleep(wait_time)
             
             # One more short wait to ensure everything is rendered
-            final_wait = 0.3 if is_cloud else 0.5
+            final_wait = 0.2 if is_cloud else 0.5
             time.sleep(final_wait)
             
             # Get the rendered HTML - check session first
@@ -1476,23 +1502,35 @@ class CourtAvailabilityScraper:
         results = [None] * len(self.config['websites'])
         
         if is_cloud:
-            # In cloud: run sequentially to avoid timeout (each court gets full timeout budget)
-            timeout_per_court = 20  # 20s per court, total ~40s for 2 courts
+            # In cloud: run sequentially with strict timeout (each court gets 12s, total ~24s for 2 courts)
+            timeout_per_court = 12  # 12s per court to stay well under 30s total
             for i, site_config in enabled_sites:
                 url = site_config['url']
                 start_time = time.time()
+                result = None
                 try:
-                    if i == 0:
-                        result = self.scrape_website_1(url)
-                    elif i == 1:
-                        result = self.scrape_website_2(url)
-                    else:
-                        result = self.scrape_website_1(url)
-                    results[i] = result
-                except Exception as e:
-                    elapsed = time.time() - start_time
-                    if elapsed >= timeout_per_court:
-                        results[i] = {
+                    # Use threading with timeout to enforce per-court limit
+                    result_container = [None]
+                    exception_container = [None]
+                    
+                    def scrape_with_timeout():
+                        try:
+                            if i == 0:
+                                result_container[0] = self.scrape_website_1(url)
+                            elif i == 1:
+                                result_container[0] = self.scrape_website_2(url)
+                            else:
+                                result_container[0] = self.scrape_website_1(url)
+                        except Exception as e:
+                            exception_container[0] = e
+                    
+                    thread = threading.Thread(target=scrape_with_timeout, daemon=True)
+                    thread.start()
+                    thread.join(timeout=timeout_per_court)
+                    
+                    if thread.is_alive():
+                        # Timeout - create error result
+                        result = {
                             'website': self.config['websites'][i].get('name', f'Website {i + 1}'),
                             'url': url,
                             'timestamp': self._get_est_timestamp(),
@@ -1500,15 +1538,30 @@ class CourtAvailabilityScraper:
                             'status': 'error',
                             'message': f'Request timed out after {timeout_per_court} seconds'
                         }
-                    else:
-                        results[i] = {
+                    elif exception_container[0]:
+                        result = {
                             'website': self.config['websites'][i].get('name', f'Website {i + 1}'),
                             'url': url,
                             'timestamp': self._get_est_timestamp(),
                             'courts': [],
                             'status': 'error',
-                            'message': f'Error: {str(e)}'
+                            'message': f'Error: {str(exception_container[0])}'
                         }
+                    else:
+                        result = result_container[0]
+                        
+                except Exception as e:
+                    result = {
+                        'website': self.config['websites'][i].get('name', f'Website {i + 1}'),
+                        'url': url,
+                        'timestamp': self._get_est_timestamp(),
+                        'courts': [],
+                        'status': 'error',
+                        'message': f'Error: {str(e)}'
+                    }
+                
+                if result:
+                    results[i] = result
         else:
             # Local: run in parallel for speed
             threads = []
