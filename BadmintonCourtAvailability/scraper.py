@@ -105,7 +105,7 @@ class CourtAvailabilityScraper:
         except:
             pass  # Driver already closed or invalid
     
-    def _scrape_with_selenium(self, url: str, website_index: int, retry_count: int = 0) -> Dict:
+    def _scrape_with_selenium(self, url: str, website_index: int, retry_count: int = 0, use_timeout: bool = True) -> Dict:
         """Scrape using Selenium to render JavaScript with improved stability."""
         # Use fewer retries in cloud to avoid timeouts
         import os
@@ -664,7 +664,10 @@ class CourtAvailabilityScraper:
                 # One more short wait to ensure everything is rendered
                 time.sleep(0.5)
             else:
-                # Cloud: wait for events to load via AJAX
+                # Cloud: wait for events to load via AJAX (but check if we're in background mode)
+                # If use_timeout=False was passed, we have unlimited time, so wait properly
+                is_background = not use_timeout
+                
                 try:
                     _ = driver.current_url  # Validate session
                 except Exception as e:
@@ -675,8 +678,34 @@ class CourtAvailabilityScraper:
                             return self._scrape_with_selenium(url, website_index, retry_count + 1)
                         else:
                             raise
-                # Wait for events to load via AJAX in cloud
-                time.sleep(0.8)  # Give AJAX time to load events
+                
+                # In background mode (unlimited time), wait properly for events like local mode
+                if is_background:
+                    events_found = False
+                    for attempt in range(5):  # More attempts since we have time
+                        try:
+                            _ = driver.current_url  # Validate session
+                            events_elements = driver.find_elements(By.CLASS_NAME, "v-b-event")
+                            if events_elements and len(events_elements) > 0:
+                                events_found = True
+                                print(f"Cloud background: Found {len(events_elements)} events on attempt {attempt + 1}", flush=True)
+                                break
+                            if attempt < 4:  # Don't wait on last attempt
+                                time.sleep(2.0)  # Wait longer since we have time
+                        except Exception as e:
+                            error_str = str(e).lower()
+                            if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
+                                if retry_count < max_retries:
+                                    self._safe_quit_driver(driver)
+                                    return self._scrape_with_selenium(url, website_index, retry_count + 1)
+                                else:
+                                    raise
+                            if attempt < 4:
+                                time.sleep(2.0)
+                    time.sleep(1.0)  # Final wait to ensure everything is rendered
+                else:
+                    # Quick mode (with timeout): minimal wait
+                    time.sleep(0.8)  # Give AJAX time to load events
             
             # Get the rendered HTML - check session first
             try:
@@ -1061,7 +1090,7 @@ class CourtAvailabilityScraper:
                     'message': f'Could not find calendar structure. Found {len(all_vb_divs)} v-b elements total. Make sure Selenium is installed and ChromeDriver is available. If using Selenium, ensure the "availability" tab was clicked.'
                 }
     
-    def scrape_website_1(self, url: str) -> Dict:
+    def scrape_website_1(self, url: str, use_timeout: bool = True) -> Dict:
         """
         Scrape first website (Pitt EMS) for court availability.
         Uses Selenium if available to render JavaScript, otherwise falls back to requests.
@@ -1070,7 +1099,7 @@ class CourtAvailabilityScraper:
             # Try Selenium first if available (for JavaScript-rendered content)
             if SELENIUM_AVAILABLE:
                 try:
-                    return self._scrape_with_selenium(url, 0)
+                    return self._scrape_with_selenium(url, 0, use_timeout=use_timeout)
                 except Exception as e:
                     # Fall back to requests if Selenium fails
                     pass
@@ -1302,14 +1331,14 @@ class CourtAvailabilityScraper:
                 'message': f'Error: {str(e)}'
             }
     
-    def scrape_website_2(self, url: str) -> Dict:
+    def scrape_website_2(self, url: str, use_timeout: bool = True) -> Dict:
         """
         Scrape second website (Pitt EMS) for court availability.
         Uses Selenium if available to render JavaScript, otherwise falls back to requests.
         """
         # Use the same Selenium method as website 1
         if SELENIUM_AVAILABLE:
-            return self._scrape_with_selenium(url, website_index=1)
+            return self._scrape_with_selenium(url, website_index=1, use_timeout=use_timeout)
         
         # Fallback to old method if Selenium not available
         return self._scrape_website_2_old(url)
@@ -1535,11 +1564,11 @@ class CourtAvailabilityScraper:
                     def scrape_with_timeout():
                         try:
                             if i == 0:
-                                result_container[0] = self.scrape_website_1(url)
+                                result_container[0] = self.scrape_website_1(url, use_timeout=True)
                             elif i == 1:
-                                result_container[0] = self.scrape_website_2(url)
+                                result_container[0] = self.scrape_website_2(url, use_timeout=True)
                             else:
-                                result_container[0] = self.scrape_website_1(url)
+                                result_container[0] = self.scrape_website_1(url, use_timeout=True)
                         except Exception as e:
                             exception_container[0] = e
                     
@@ -1588,11 +1617,11 @@ class CourtAvailabilityScraper:
                 url = site_config['url']
                 try:
                     if i == 0:
-                        result = self.scrape_website_1(url)
+                        result = self.scrape_website_1(url, use_timeout=False)
                     elif i == 1:
-                        result = self.scrape_website_2(url)
+                        result = self.scrape_website_2(url, use_timeout=False)
                     else:
-                        result = self.scrape_website_1(url)
+                        result = self.scrape_website_1(url, use_timeout=False)
                     results[i] = result
                     print(f"Scraper: Court {i+1} completed: {result.get('status', 'unknown')}", flush=True)
                 except Exception as e:
