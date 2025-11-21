@@ -41,6 +41,12 @@ scraper = None
 last_activity = time.time()
 shutdown_delay = 300  # 5 minutes of inactivity (only used locally)
 
+# Cache for scraped results (for cloud deployment)
+cached_results = None
+cache_timestamp = None
+cache_lock = threading.Lock()
+cache_ttl = 300  # Cache for 5 minutes
+
 def get_local_ip():
     """Get the local IP address for accessing from phone."""
     try:
@@ -171,12 +177,148 @@ def timeout_handler(timeout_seconds=30):
         return wrapper
     return decorator
 
+def refresh_cache_background():
+    """Background function to refresh the cache periodically."""
+    global scraper, cached_results, cache_timestamp, cache_lock
+    import os
+    is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+    
+    if not is_cloud:
+        return  # Only use caching in cloud
+    
+    while True:
+        try:
+            if scraper is None:
+                scraper = CourtAvailabilityScraper()
+            
+            print("Background: Starting cache refresh...", flush=True)
+            results = scraper.check_all_websites()
+            
+            with cache_lock:
+                cached_results = results
+                cache_timestamp = time.time()
+            
+            print(f"Background: Cache refreshed successfully at {get_est_timestamp()}", flush=True)
+        except Exception as e:
+            import traceback
+            print(f"Background: Error refreshing cache: {str(e)}", flush=True)
+            print(traceback.format_exc(), flush=True)
+        
+        # Wait before next refresh (refresh every 4 minutes, cache is valid for 5 minutes)
+        time.sleep(240)  # 4 minutes
+
 @app.route('/api/availability')
-@timeout_handler(timeout_seconds=22)  # 22s to stay under Render's 30s limit (10s per court + 2s buffer)
 def get_availability():
     """API endpoint to get current availability."""
-    global scraper
+    global scraper, cached_results, cache_timestamp, cache_lock
+    import os
+    is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+    
     update_activity()
+    
+    # In cloud: return cached results immediately, trigger refresh in background if needed
+    if is_cloud:
+        with cache_lock:
+            cache_age = time.time() - cache_timestamp if cache_timestamp else float('inf')
+            
+            # If cache exists and is fresh, return it immediately
+            if cached_results is not None and cache_age < cache_ttl:
+                return jsonify({
+                    'success': True,
+                    'data': cached_results,
+                    'timestamp': get_est_timestamp(),
+                    'cached': True,
+                    'cache_age_seconds': int(cache_age)
+                })
+            
+            # If cache is stale or missing, return it anyway but trigger refresh
+            if cached_results is not None:
+                # Return stale cache but trigger background refresh
+                def refresh_in_background():
+                    try:
+                        if scraper is None:
+                            scraper = CourtAvailabilityScraper()
+                        results = scraper.check_all_websites()
+                        with cache_lock:
+                            global cached_results, cache_timestamp
+                            cached_results = results
+                            cache_timestamp = time.time()
+                    except Exception as e:
+                        print(f"Background refresh error: {str(e)}", flush=True)
+                
+                # Trigger refresh in background thread (non-blocking)
+                threading.Thread(target=refresh_in_background, daemon=True).start()
+                
+                return jsonify({
+                    'success': True,
+                    'data': cached_results,
+                    'timestamp': get_est_timestamp(),
+                    'cached': True,
+                    'cache_age_seconds': int(cache_age),
+                    'refreshing': True
+                })
+        
+        # No cache at all - try to get initial results (with timeout)
+        try:
+            if scraper is None:
+                scraper = CourtAvailabilityScraper()
+            
+            # Use shorter timeout for initial load
+            result_container = [None]
+            exception_container = [None]
+            
+            def scrape_with_timeout():
+                try:
+                    result_container[0] = scraper.check_all_websites()
+                except Exception as e:
+                    exception_container[0] = e
+            
+            thread = threading.Thread(target=scrape_with_timeout, daemon=True)
+            thread.start()
+            thread.join(timeout=20)  # 20s timeout for initial load
+            
+            if thread.is_alive():
+                # Timeout - return error but start background refresh
+                threading.Thread(target=refresh_cache_background, daemon=True).start()
+                return jsonify({
+                    'success': False,
+                    'error': 'Initial load timed out. Cache will be available shortly.',
+                    'timestamp': get_est_timestamp()
+                }), 504
+            
+            if exception_container[0]:
+                raise exception_container[0]
+            
+            results = result_container[0]
+            with cache_lock:
+                cached_results = results
+                cache_timestamp = time.time()
+            
+            # Start background refresh thread
+            threading.Thread(target=refresh_cache_background, daemon=True).start()
+            
+            return jsonify({
+                'success': True,
+                'data': results,
+                'timestamp': get_est_timestamp(),
+                'cached': False
+            })
+        except Exception as e:
+            import traceback
+            error_msg = str(e)
+            print(f"Error in get_availability: {error_msg}", flush=True)
+            print(traceback.format_exc(), flush=True)
+            
+            # Start background refresh anyway
+            threading.Thread(target=refresh_cache_background, daemon=True).start()
+            
+            return jsonify({
+                'success': False,
+                'error': error_msg,
+                'timestamp': get_est_timestamp()
+            }), 500
+    
+    # Local: no caching, scrape on demand
     try:
         if scraper is None:
             scraper = CourtAvailabilityScraper()
@@ -189,7 +331,6 @@ def get_availability():
     except Exception as e:
         import traceback
         error_msg = str(e)
-        # Log the full traceback for debugging
         print(f"Error in get_availability: {error_msg}", flush=True)
         print(traceback.format_exc(), flush=True)
         return jsonify({
@@ -222,6 +363,12 @@ if __name__ == '__main__':
     if not is_cloud:
         inactivity_thread = threading.Thread(target=check_inactivity, daemon=True)
         inactivity_thread.start()
+    else:
+        # In cloud: start background cache refresh thread
+        print("Starting background cache refresh thread...", flush=True)
+        cache_refresh_thread = threading.Thread(target=refresh_cache_background, daemon=True)
+        cache_refresh_thread.start()
+        print("Background cache refresh thread started", flush=True)
     
     print("\n" + "="*60)
     print("🏸 Badminton Court Availability")
