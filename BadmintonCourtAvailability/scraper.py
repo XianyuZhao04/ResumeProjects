@@ -281,7 +281,7 @@ class CourtAvailabilityScraper:
                             # Wait for tab content to load (shorter in cloud)
                             import os
                             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                            wait_time = 0.6 if is_cloud else 1.0
+                            wait_time = 0.3 if is_cloud else 1.0  # Very short in cloud
                             time.sleep(wait_time)
                             
                             # Verify the tab was actually clicked by checking if calendar is visible
@@ -344,7 +344,7 @@ class CourtAvailabilityScraper:
                                         # Shorter wait in cloud
                                         import os
                                         is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                                        wait_after_tab = 0.5 if is_cloud else 1.0
+                                        wait_after_tab = 0.3 if is_cloud else 1.0  # Very short in cloud
                                         time.sleep(wait_after_tab)
                                         tab_clicked = True
                                         break
@@ -563,7 +563,7 @@ class CourtAvailabilityScraper:
             # Give time for events to load via AJAX (shorter in cloud)
             import os
             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-            ajax_wait = 0.5 if is_cloud else 1.5  # Very short in cloud
+            ajax_wait = 0.3 if is_cloud else 1.5  # Very short in cloud
             time.sleep(ajax_wait)
             
             # Scroll to calendar area and try to navigate to today's date
@@ -571,7 +571,7 @@ class CourtAvailabilityScraper:
                 _ = driver.current_url  # Validate session
                 calendar_element = driver.find_element(By.ID, "room-availability-control")
                 driver.execute_script("arguments[0].scrollIntoView(true);", calendar_element)
-                scroll_wait = 0.5 if is_cloud else 0.8
+                scroll_wait = 0.2 if is_cloud else 0.8  # Very short in cloud
                 time.sleep(scroll_wait)
                 
                 # Try to scroll calendar horizontally to find today's date
@@ -602,7 +602,7 @@ class CourtAvailabilityScraper:
                             if str(today_day_num) in date_text and today_day_name_short in date_text:
                                 # Found today! Scroll it into view
                                 driver.execute_script("arguments[0].scrollIntoView({block: 'nearest', inline: 'center'});", date_elem)
-                                wait_after_scroll = 1.0 if is_cloud else 1.5
+                                wait_after_scroll = 0.3 if is_cloud else 1.5  # Very short in cloud
                                 time.sleep(wait_after_scroll)  # Wait for events to load after scrolling
                                 found_today = True
                                 break
@@ -616,7 +616,7 @@ class CourtAvailabilityScraper:
                             var container = arguments[0];
                             container.scrollLeft = 0;
                         """, calendar_element)
-                        wait_after_scroll = 1.0 if is_cloud else 1.5
+                        wait_after_scroll = 0.3 if is_cloud else 1.5  # Very short in cloud
                         time.sleep(wait_after_scroll)  # Wait for events to load after scrolling
                 except:
                     pass  # If scrolling fails, continue anyway
@@ -646,7 +646,7 @@ class CourtAvailabilityScraper:
                         events_found = True
                         break
                     if attempt < max_attempts - 1:  # Don't wait on last attempt
-                        wait_time = 0.5 if is_cloud else 1.5  # Shorter waits in cloud
+                        wait_time = 0.3 if is_cloud else 1.5  # Very short waits in cloud
                         time.sleep(wait_time)
                 except Exception as e:
                     error_str = str(e).lower()
@@ -657,11 +657,11 @@ class CourtAvailabilityScraper:
                         else:
                             raise
                     if attempt < max_attempts - 1:
-                        wait_time = 0.5 if is_cloud else 1.5
+                        wait_time = 0.3 if is_cloud else 1.5
                         time.sleep(wait_time)
             
             # One more short wait to ensure everything is rendered
-            final_wait = 0.2 if is_cloud else 0.5
+            final_wait = 0.1 if is_cloud else 0.5  # Minimal wait in cloud
             time.sleep(final_wait)
             
             # Get the rendered HTML - check session first
@@ -1503,8 +1503,8 @@ class CourtAvailabilityScraper:
         results = [None] * len(self.config['websites'])
         
         if is_cloud:
-            # In cloud: run sequentially with strict timeout (each court gets 12s, total ~24s for 2 courts)
-            timeout_per_court = 12  # 12s per court to stay well under 30s total
+            # In cloud: run sequentially with strict timeout (each court gets 14s, total ~28s for 2 courts)
+            timeout_per_court = 14  # 14s per court to stay under 30s total
             for i, site_config in enabled_sites:
                 url = site_config['url']
                 start_time = time.time()
