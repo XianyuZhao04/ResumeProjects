@@ -172,7 +172,7 @@ def timeout_handler(timeout_seconds=30):
     return decorator
 
 @app.route('/api/availability')
-@timeout_handler(timeout_seconds=28)  # 28s to stay under Render's 30s limit
+@timeout_handler(timeout_seconds=22)  # 22s to stay under Render's 30s limit (10s per court + 2s buffer)
 def get_availability():
     """API endpoint to get current availability."""
     global scraper

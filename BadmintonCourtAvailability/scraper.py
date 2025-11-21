@@ -620,8 +620,8 @@ class CourtAvailabilityScraper:
                     except:
                         pass  # If scrolling fails, continue anyway
                 else:
-                    # In cloud: minimal wait after scrolling to calendar
-                    time.sleep(0.2)
+                    # In cloud: wait a bit for events to load after scrolling to calendar
+                    time.sleep(0.5)  # Give events time to load via AJAX
             except Exception as e:
                 error_str = str(e).lower()
                 if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -664,7 +664,7 @@ class CourtAvailabilityScraper:
                 # One more short wait to ensure everything is rendered
                 time.sleep(0.5)
             else:
-                # Cloud: minimal wait, just check once and move on
+                # Cloud: wait for events to load via AJAX
                 try:
                     _ = driver.current_url  # Validate session
                 except Exception as e:
@@ -675,8 +675,8 @@ class CourtAvailabilityScraper:
                             return self._scrape_with_selenium(url, website_index, retry_count + 1)
                         else:
                             raise
-                # Minimal wait in cloud - events may not be fully loaded, but we'll parse what we can
-                time.sleep(0.2)
+                # Wait for events to load via AJAX in cloud
+                time.sleep(0.8)  # Give AJAX time to load events
             
             # Get the rendered HTML - check session first
             try:
@@ -1517,8 +1517,8 @@ class CourtAvailabilityScraper:
         results = [None] * len(self.config['websites'])
         
         if is_cloud:
-            # In cloud: run sequentially with strict timeout (each court gets 14s, total ~28s for 2 courts)
-            timeout_per_court = 14  # 14s per court to stay under 30s total
+            # In cloud: run sequentially with strict timeout (each court gets 10s, total ~20s for 2 courts)
+            timeout_per_court = 10  # 10s per court to stay well under 30s total
             for i, site_config in enabled_sites:
                 url = site_config['url']
                 start_time = time.time()
