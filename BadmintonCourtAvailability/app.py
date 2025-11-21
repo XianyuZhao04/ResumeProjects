@@ -108,13 +108,21 @@ def timeout_handler(timeout_seconds=30):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            import signal
-            
             # Check if we're in cloud (timeout handling needed)
             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
             if not is_cloud:
-                # Local: no timeout needed
-                return func(*args, **kwargs)
+                # Local: no timeout needed, just call the function
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    import traceback
+                    print(f"Error in {func.__name__}: {str(e)}", flush=True)
+                    print(traceback.format_exc(), flush=True)
+                    return jsonify({
+                        'success': False,
+                        'error': str(e),
+                        'timestamp': get_est_timestamp()
+                    }), 500
             
             # Cloud: use threading timeout
             result = [None]
@@ -125,6 +133,9 @@ def timeout_handler(timeout_seconds=30):
                     result[0] = func(*args, **kwargs)
                 except Exception as e:
                     exception[0] = e
+                    import traceback
+                    print(f"Error in {func.__name__} (thread): {str(e)}", flush=True)
+                    print(traceback.format_exc(), flush=True)
             
             thread = threading.Thread(target=target, daemon=True)
             thread.start()
@@ -132,6 +143,7 @@ def timeout_handler(timeout_seconds=30):
             
             if thread.is_alive():
                 # Timeout occurred
+                print(f"Request timed out after {timeout_seconds} seconds", flush=True)
                 return jsonify({
                     'success': False,
                     'error': f'Request timed out after {timeout_seconds} seconds',
@@ -139,7 +151,20 @@ def timeout_handler(timeout_seconds=30):
                 }), 504  # Gateway Timeout
             
             if exception[0]:
-                raise exception[0]
+                # Exception occurred in thread - return error response instead of raising
+                return jsonify({
+                    'success': False,
+                    'error': str(exception[0]),
+                    'timestamp': get_est_timestamp()
+                }), 500
+            
+            if result[0] is None:
+                # Function didn't return anything (shouldn't happen, but handle it)
+                return jsonify({
+                    'success': False,
+                    'error': 'No response from server',
+                    'timestamp': get_est_timestamp()
+                }), 500
             
             return result[0]
         return wrapper

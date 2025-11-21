@@ -1459,13 +1459,14 @@ class CourtAvailabilityScraper:
                 else:
                     with open('debug_sample_2.html', 'w', encoding='utf-8') as f:
                         f.write(soup.prettify())
+                    debug_msg = debug_info if 'debug_info' in locals() else "Could not find calendar structure."
                     return {
                         'website': self.config['websites'][1].get('name', 'Website 2'),
                         'url': url,
                         'timestamp': self._get_est_timestamp(),
                         'courts': [],
                         'status': 'success',
-                        'message': f'Could not find calendar structure. HTML saved to debug_sample_2.html. {debug_info} The URL may be expired or require authentication.'
+                        'message': f'Could not find calendar structure. HTML saved to debug_sample_2.html. {debug_msg} The URL may be expired or require authentication.'
                     }
             
             return {
