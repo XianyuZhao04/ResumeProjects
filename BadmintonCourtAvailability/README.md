@@ -152,3 +152,5 @@ The URLs contain encoded data that may expire, so you might need to refresh them
 ## 📄 License
 
 This is a personal project for checking badminton court availability. Use at your own discretion.
+This project was developed with the assistance of AI tools for coding support.
+I am currently hosting this app on [render.com](https://render.com/), feel free to check it out [here](https://badminton-court-availability.onrender.com).

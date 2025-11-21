@@ -11,6 +11,29 @@ import threading
 import time
 import sys
 
+def get_est_timestamp():
+    """Get current timestamp in EST timezone."""
+    try:
+        from zoneinfo import ZoneInfo
+        est = ZoneInfo("America/New_York")
+        return datetime.now(est).isoformat()
+    except:
+        # Fallback if zoneinfo not available (Python < 3.9)
+        try:
+            from datetime import timezone, timedelta
+            try:
+                import pytz
+                est_tz = pytz.timezone('America/New_York')
+                return datetime.now(est_tz).isoformat()
+            except ImportError:
+                # No pytz, use fixed offset (will be off during DST)
+                est_offset = timedelta(hours=-5)  # EST is UTC-5
+                est_tz = timezone(est_offset)
+                return datetime.now(est_tz).isoformat()
+        except:
+            # Final fallback
+            return datetime.now().isoformat()
+
 app = Flask(__name__)
 scraper = None
 last_activity = time.time()
@@ -90,13 +113,13 @@ def get_availability():
         return jsonify({
             'success': True,
             'data': results,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': get_est_timestamp()
         })
     except Exception as e:
         return jsonify({
             'success': False,
             'error': str(e),
-            'timestamp': datetime.now().isoformat()
+            'timestamp': get_est_timestamp()
         }), 500
 
 @app.route('/api/shutdown', methods=['POST'])

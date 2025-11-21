@@ -9,6 +9,8 @@ from datetime import datetime
 import os
 import re
 import threading
+import time
+from zoneinfo import ZoneInfo
 
 # Lock for ChromeDriver installation to prevent concurrent downloads
 _chromedriver_lock = threading.Lock()
@@ -58,6 +60,33 @@ class CourtAvailabilityScraper:
             'Cache-Control': 'max-age=0'
         })
     
+    def _get_est_timestamp(self):
+        """Get current timestamp in EST timezone."""
+        try:
+            est = ZoneInfo("America/New_York")
+            return datetime.now(est).isoformat()
+        except:
+            # Fallback if zoneinfo not available (Python < 3.9)
+            try:
+                from datetime import timezone, timedelta
+                # Account for DST - EST is UTC-5, EDT is UTC-4
+                # Simple approach: check if we're in DST (roughly March-November)
+                now_utc = datetime.utcnow()
+                # EST/EDT is roughly March 2nd Sunday to November 1st Sunday
+                # For simplicity, use UTC-5 for now, or better: use pytz if available
+                try:
+                    import pytz
+                    est_tz = pytz.timezone('America/New_York')
+                    return datetime.now(est_tz).isoformat()
+                except ImportError:
+                    # No pytz, use fixed offset (will be off during DST)
+                    est_offset = timedelta(hours=-5)  # EST is UTC-5
+                    est_tz = timezone(est_offset)
+                    return datetime.now(est_tz).isoformat()
+            except:
+                # Final fallback
+                return datetime.now().isoformat()
+    
     def _safe_quit_driver(self, driver):
         """Safely quit a driver, handling invalid session errors."""
         if not driver:
@@ -77,8 +106,8 @@ class CourtAvailabilityScraper:
             pass  # Driver already closed or invalid
     
     def _scrape_with_selenium(self, url: str, website_index: int, retry_count: int = 0) -> Dict:
-        """Scrape using Selenium to render JavaScript."""
-        max_retries = 2
+        """Scrape using Selenium to render JavaScript with improved stability."""
+        max_retries = 3  # Increased retries
         options = Options()
         options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
@@ -89,14 +118,29 @@ class CourtAvailabilityScraper:
         options.add_experimental_option('useAutomationExtension', False)
         options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        # Additional options for cloud/Linux environments
+        # Additional options for cloud/Linux environments - improved stability
         options.add_argument('--disable-software-rasterizer')
         options.add_argument('--disable-extensions')
-        options.add_argument('--single-process')  # May help in some cloud environments
-        options.add_argument('--remote-debugging-port=9222')
+        options.add_argument('--disable-background-timer-throttling')
+        options.add_argument('--disable-backgrounding-occluded-windows')
+        options.add_argument('--disable-renderer-backgrounding')
+        options.add_argument('--disable-features=TranslateUI')
+        options.add_argument('--disable-ipc-flooding-protection')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--start-maximized')
+        # Remove --single-process as it can cause issues, use --remote-debugging-port=0 for random port
+        options.add_argument('--remote-debugging-port=0')
+        
+        # Set page load strategy to eager (don't wait for all resources)
+        options.page_load_strategy = 'eager'
         
         driver = None
         try:
+            # Exponential backoff for retries
+            if retry_count > 0:
+                wait_time = min(2 ** retry_count, 5)  # Max 5 seconds
+                time.sleep(wait_time)
+            
             # Try to use webdriver-manager if available, otherwise use system ChromeDriver
             try:
                 from selenium.webdriver.chrome.service import Service
@@ -110,6 +154,9 @@ class CourtAvailabilityScraper:
                     try:
                         service = Service(ChromeDriverManager().install())
                         driver = webdriver.Chrome(service=service, options=options)
+                        # Set timeouts to prevent hanging
+                        driver.set_page_load_timeout(30)
+                        driver.implicitly_wait(5)
                     except Exception as wdm_error:
                         # If webdriver-manager fails (e.g., corrupted cache), try clearing cache and retrying
                         if "zip" in str(wdm_error).lower() or "not a zip" in str(wdm_error).lower():
@@ -121,51 +168,69 @@ class CourtAvailabilityScraper:
                                 # Retry installation
                                 service = Service(ChromeDriverManager().install())
                                 driver = webdriver.Chrome(service=service, options=options)
+                                driver.set_page_load_timeout(30)
+                                driver.implicitly_wait(5)
                             except Exception as retry_error:
                                 # If retry fails, fall back to system ChromeDriver
                                 driver = webdriver.Chrome(options=options)
+                                driver.set_page_load_timeout(30)
+                                driver.implicitly_wait(5)
                         else:
                             # For other errors, fall back to system ChromeDriver
                             driver = webdriver.Chrome(options=options)
+                            driver.set_page_load_timeout(30)
+                            driver.implicitly_wait(5)
             except ImportError:
                 # Fall back to system ChromeDriver if webdriver-manager not available
                 driver = webdriver.Chrome(options=options)
+                driver.set_page_load_timeout(30)
+                driver.implicitly_wait(5)
+            
+            # Validate driver before proceeding
+            try:
+                _ = driver.current_url
+            except:
+                raise Exception("Driver session invalid immediately after creation")
             
             driver.get(url)
             
-            # Wait for page to load (reduced from 2s to 1s, using smart wait)
-            import time
+            # Wait for page to load with better error handling
             try:
                 # Check if session is still valid
                 _ = driver.current_url
-                WebDriverWait(driver, 3).until(
-                    lambda d: d.execute_script('return document.readyState') == 'complete'
+                # Use shorter timeout since we're using eager page load strategy
+                WebDriverWait(driver, 5).until(
+                    lambda d: d.execute_script('return document.readyState') in ['complete', 'interactive']
                 )
             except Exception as session_error:
-                if "invalid session" in str(session_error).lower() or "session id" in str(session_error).lower():
+                error_str = str(session_error).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     # Session invalid - retry if we haven't exceeded max retries
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
                     else:
-                        raise
-                time.sleep(0.5)  # Fallback short wait
+                        raise Exception(f"Session failed after {max_retries + 1} attempts: {str(session_error)}")
+                # For other errors, continue with a short wait
+                time.sleep(0.3)
             
             # Find and click the "availability" tab
             tab_clicked = False
             try:
-                # Wait a bit for tabs to render (reduced from 1s to 0.5s)
-                time.sleep(0.5)
+                # Wait a bit for tabs to render (reduced wait time)
+                time.sleep(0.3)
                 
                 # Look for the availability tab - try multiple strategies
                 availability_tab = None
                 
-                # Strategy 1: Try specific selectors
+                # Strategy 1: Try specific selectors (corrected based on actual HTML)
                 selectors = [
-                    (By.ID, "room-availability-tab"),
+                    (By.ID, "availability-tab"),  # FIXED: Actual ID is "availability-tab", not "room-availability-tab"
                     (By.CSS_SELECTOR, "a[href='#room-availability']"),
+                    (By.CSS_SELECTOR, "#availability-tab"),  # Also try as CSS selector
                     (By.CSS_SELECTOR, "a[data-toggle='tab'][href*='availability']"),
                     (By.CSS_SELECTOR, "a[href*='availability']"),
+                    (By.XPATH, "//a[@id='availability-tab']"),  # Explicit XPath for the ID
                     (By.XPATH, "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'availability')]"),
                     (By.XPATH, "//li/a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'availability')]"),
                     (By.XPATH, "//*[@role='tab' and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'availability')]"),
@@ -179,17 +244,36 @@ class CourtAvailabilityScraper:
                         if availability_tab and availability_tab.is_displayed():
                             # Scroll into view and click
                             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", availability_tab)
-                            time.sleep(0.3)
+                            time.sleep(0.2)
                             # Try JavaScript click first (more reliable)
                             try:
                                 driver.execute_script("arguments[0].click();", availability_tab)
                             except:
                                 availability_tab.click()
-                            time.sleep(1)  # Wait for tab content to load (reduced from 2s to 1s)
-                            tab_clicked = True
-                            break
+                            time.sleep(1.5)  # Wait for tab content to load
+            
+                            # Verify the tab was actually clicked by checking if calendar is visible
+                            try:
+                                # Check if the room-availability tab panel is now active
+                                tab_panel = driver.find_element(By.ID, "room-availability")
+                                is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
+                                if is_active:
+                                    tab_clicked = True
+                                else:
+                                    # Wait a bit more and check again
+                                    time.sleep(1.5)
+                                    is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
+                                    if is_active:
+                                        tab_clicked = True
+                            except:
+                                # Assume it worked and continue
+                                tab_clicked = True
+                            
+                            if tab_clicked:
+                                break
                     except Exception as e:
-                        if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                        error_str = str(e).lower()
+                        if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                             if retry_count < max_retries:
                                 self._safe_quit_driver(driver)
                                 return self._scrape_with_selenium(url, website_index, retry_count + 1)
@@ -235,28 +319,41 @@ class CourtAvailabilityScraper:
             # Wait for calendar to load - wait for v-b-date first
             # But also check if tab was clicked - if not, calendar won't load
             calendar_found = False
+            if not tab_clicked:
+                # Try one more time to click the tab
+                try:
+                    tab = driver.find_element(By.ID, "availability-tab")
+                    if tab:
+                        driver.execute_script("arguments[0].click();", tab)
+                        time.sleep(1.0)
+                        tab_clicked = True
+                except:
+                    pass
+            
             try:
                 # Check if session is still valid
                 _ = driver.current_url
-                WebDriverWait(driver, 10).until(  # Reduced from 15s to 10s
+                WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "v-b-date"))
                 )
                 calendar_found = True
             except Exception as e:
-                if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
                     else:
                         raise
-                # Calendar might not be visible yet - try waiting a bit more (reduced from 3s to 1.5s)
-                time.sleep(1.5)
+                # Calendar might not be visible yet - try waiting a bit more (reduced wait)
+                time.sleep(1.0)
                 try:
                     _ = driver.current_url  # Check session
                     driver.find_element(By.CLASS_NAME, "v-b-date")
                     calendar_found = True
                 except Exception as e2:
-                    if "invalid session" in str(e2).lower() or "session id" in str(e2).lower():
+                    error_str = str(e2).lower()
+                    if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                         if retry_count < max_retries:
                             self._safe_quit_driver(driver)
                             return self._scrape_with_selenium(url, website_index, retry_count + 1)
@@ -386,16 +483,15 @@ class CourtAvailabilityScraper:
                     pass
             
             # Wait for JavaScript to fully render - events may load via AJAX
-            import time
-            
             # Wait for page to be ready (reduced timeout)
             try:
                 _ = driver.current_url  # Validate session
-                WebDriverWait(driver, 5).until(  # Reduced from 8s to 5s
-                    lambda d: d.execute_script('return document.readyState') == 'complete'
+                WebDriverWait(driver, 3).until(  # Reduced timeout
+                    lambda d: d.execute_script('return document.readyState') in ['complete', 'interactive']
                 )
             except Exception as e:
-                if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
@@ -406,11 +502,12 @@ class CourtAvailabilityScraper:
             # Wait for any AJAX/jQuery calls to complete (reduced timeout)
             try:
                 _ = driver.current_url  # Validate session
-                WebDriverWait(driver, 3).until(  # Reduced from 5s to 3s
+                WebDriverWait(driver, 2).until(  # Reduced timeout
                     lambda d: d.execute_script('return typeof jQuery !== "undefined" && jQuery.active == 0') or True
                 )
             except Exception as e:
-                if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
@@ -418,17 +515,18 @@ class CourtAvailabilityScraper:
                         raise
                 pass
             
-            # Give time for events to load (reduced from 3s to 1.5s)
-            time.sleep(1.5)
+            # Give time for events to load via AJAX
+            time.sleep(2.0)
             
             # Scroll to calendar area to trigger lazy loading if needed
             try:
                 _ = driver.current_url  # Validate session
                 calendar_element = driver.find_element(By.ID, "room-availability-control")
                 driver.execute_script("arguments[0].scrollIntoView(true);", calendar_element)
-                time.sleep(0.5)  # Reduced from 1s to 0.5s
+                time.sleep(1.0)  # Wait after scrolling
             except Exception as e:
-                if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
@@ -437,22 +535,25 @@ class CourtAvailabilityScraper:
                 pass
             
             # Try to wait for events specifically (but don't fail if none found)
+            # Events may load asynchronously via AJAX, so wait a bit
             try:
                 _ = driver.current_url  # Validate session
-                WebDriverWait(driver, 2).until(  # Reduced from 3s to 2s
+                WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "v-b-event"))
                 )
             except Exception as e:
-                if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
                     else:
                         raise
                 # No events found - might be fully available or still loading
-                pass
+                # Give a bit more time for AJAX to complete
+                time.sleep(1.5)
             
-            # One more short wait (reduced from 1s to 0.5s)
+            # One more short wait to ensure everything is rendered
             time.sleep(0.5)
             
             # Get the rendered HTML - check session first
@@ -460,7 +561,8 @@ class CourtAvailabilityScraper:
                 _ = driver.current_url  # Validate session
                 html = driver.page_source
             except Exception as e:
-                if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
@@ -474,7 +576,6 @@ class CourtAvailabilityScraper:
                 debug_page_file = f'debug_page_source_610B.html'
                 with open(debug_page_file, 'w', encoding='utf-8') as f:
                     f.write(html)
-                print(f"DEBUG: Saved page source for 610B to {debug_page_file}")
             
             # Debug: Check how many events we found - validate session first
             try:
@@ -482,7 +583,8 @@ class CourtAvailabilityScraper:
                 events_before_parse = driver.find_elements(By.CLASS_NAME, "v-b-event")
                 date_divs_selenium = driver.find_elements(By.CLASS_NAME, "v-b-date")
             except Exception as e:
-                if "invalid session" in str(e).lower() or "session id" in str(e).lower():
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
                     if retry_count < max_retries:
                         self._safe_quit_driver(driver)
                         return self._scrape_with_selenium(url, website_index, retry_count + 1)
@@ -537,7 +639,7 @@ class CourtAvailabilityScraper:
         except Exception as e:
             # Check if it's an invalid session error and we can retry
             error_str = str(e).lower()
-            if ("invalid session" in error_str or "session id" in error_str) and retry_count < max_retries:
+            if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]) and retry_count < max_retries:
                 self._safe_quit_driver(driver)
                 return self._scrape_with_selenium(url, website_index, retry_count + 1)
             
@@ -545,7 +647,7 @@ class CourtAvailabilityScraper:
             return {
                 'website': self.config['websites'][website_index].get('name', f'Website {website_index + 1}'),
                 'url': url,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': self._get_est_timestamp(),
                 'courts': [],
                 'status': 'error',
                 'message': f'Selenium error: {str(e)}. Make sure ChromeDriver is installed.'
@@ -557,8 +659,19 @@ class CourtAvailabilityScraper:
         """Parse calendar HTML to find RESERVED/OCCUPIED times (not available)."""
         reserved_slots = []
         
-        # Get today's date info for filtering
-        today = datetime.now()
+        # Get today's date info for filtering - use EST timezone
+        try:
+            est = ZoneInfo("America/New_York")
+            today = datetime.now(est)
+        except:
+            try:
+                import pytz
+                est_tz = pytz.timezone('America/New_York')
+                today = datetime.now(est_tz)
+            except:
+                # Fallback to UTC if timezone libraries not available
+                today = datetime.now()
+        
         today_day_name = today.strftime('%A')  # e.g., "Friday"
         today_day_name_short = today.strftime('%a')  # e.g., "Fri"
         today_day_num = today.day  # e.g., 7
@@ -579,6 +692,9 @@ class CourtAvailabilityScraper:
         
         # Debug: Also check for any divs with v-b in the class
         all_vb_divs = soup.find_all('div', class_=lambda x: x and 'v-b' in str(x))
+        
+        # Debug: Log how many events we found
+        events_found_count = len(events) if events else 0
         
         if events:
             for event in events:
@@ -678,23 +794,25 @@ class CourtAvailabilityScraper:
                                     
                                     day_name = day_text
                                     
-                                    # Track found dates for debugging
-                                    if day_text not in found_dates:
+                                    # Track found dates for debugging (only unique ones)
+                                    if day_text and day_text not in found_dates:
                                         found_dates.append(day_text)
                                     
                                     # Check if this is today's date
                                     # Format can be "Friday, November 7th" or "Fri, Nov 7th" (abbreviated)
                                     # Also handle "Friday,November 7th" (no space after comma)
-                                    day_text_lower = day_text.replace(',', ' ').replace('  ', ' ').lower()
+                                    day_text_lower = day_text.replace(',', ' ').replace('  ', ' ').lower().strip()
                                     
                                     # Remove ordinal suffixes (st, nd, rd, th) from day number in text
                                     day_text_clean = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', day_text_lower)
+                                    
+                                    # Debug: print what we're comparing
                                     
                                     # Try full day/month names (with or without space after comma)
                                     today_pattern1 = f"{today_day_name.lower()},?\\s*{today_month_name.lower()}\\s*{today_day_num}"
                                     today_pattern2 = f"{today_day_name.lower()}\\s+{today_month_name.lower()}\\s+{today_day_num}"
                                     
-                                    # Try abbreviated day/month names (e.g., "Fri, Nov 7")
+                                    # Try abbreviated day/month names (e.g., "Fri, Nov 7" or "Thu Nov 20")
                                     today_pattern3 = f"{today_day_name_short.lower()},?\\s*{today_month_name_short.lower()}\\s*{today_day_num}"
                                     today_pattern4 = f"{today_day_name_short.lower()}\\s+{today_month_name_short.lower()}\\s+{today_day_num}"
                                     
@@ -702,6 +820,8 @@ class CourtAvailabilityScraper:
                                     today_pattern5 = f"{today_day_name.lower()}\\s+{today_day_num}"
                                     today_pattern6 = f"{today_day_name_short.lower()}\\s+{today_day_num}"
                                     
+                                    # More flexible pattern: just check if day name and number are present
+                                    # This handles "Thu, Nov 20th" -> "thu nov 20"
                                     if (re.search(today_pattern1, day_text_clean) or 
                                         re.search(today_pattern2, day_text_clean) or
                                         re.search(today_pattern3, day_text_clean) or
@@ -709,15 +829,27 @@ class CourtAvailabilityScraper:
                                         re.search(today_pattern5, day_text_clean) or
                                         re.search(today_pattern6, day_text_clean)):
                                         is_today = True
-                                    # Also try matching just the day name (full or short) and number (most flexible)
+                                    # Also try matching just the day name (full or short) and number
+                                    # This is the most flexible - just check if both are present
                                     elif ((today_day_name.lower() in day_text_clean or today_day_name_short.lower() in day_text_clean) and 
                                           str(today_day_num) in day_text_clean):
                                         is_today = True
+                                    # Even more flexible: check if the day number matches and day name is present
+                                    # This handles cases where format might be slightly different
+                                    elif str(today_day_num) in day_text_clean:
+                                        # Check if any day name variant is present
+                                        if (today_day_name.lower() in day_text_clean or 
+                                            today_day_name_short.lower() in day_text_clean or
+                                            today_month_name.lower() in day_text_clean or
+                                            today_month_name_short.lower() in day_text_clean):
+                                            is_today = True
                                     
                                     # Debug: if date found but not matching today, log it
                                     if not is_today and day_text:
                                         # This helps us see if date matching is the issue
-                                        pass
+                                        # Store debug info for later with what we're comparing
+                                        debug_info = f"{day_text} -> cleaned: '{day_text_clean}' vs today: '{today_day_name_short} {today_month_name_short} {today_day_num}'"
+                                        found_dates.append(debug_info)
                                     
                                     events_checked += 1
                                 else:
@@ -750,7 +882,7 @@ class CourtAvailabilityScraper:
             return {
                 'website': self.config['websites'][website_index].get('name', f'Website {website_index + 1}'),
                 'url': url,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': self._get_est_timestamp(),
                 'courts': reserved_slots,
                 'status': 'success',
                 'message': f'Found {len(reserved_slots)} reserved time slot(s) for today'
@@ -760,19 +892,48 @@ class CourtAvailabilityScraper:
             date_divs = soup.find_all('div', class_='v-b-date')
             if date_divs:
                 # Calendar found but no reservations for today - this is normal!
+                # Debug: show what dates were found
+                found_date_texts = []
+                for date_div in date_divs[:5]:  # First 5 dates
+                    try:
+                        date_span = date_div.find('span', {'aria-hidden': 'true'})
+                        if date_span:
+                            found_date_texts.append(date_span.get_text(strip=True))
+                        else:
+                            found_date_texts.append(date_div.get('aria-label', 'Unknown'))
+                    except:
+                        pass
+                
+                # Also check if we found events but they weren't for today
+                all_events = soup.find_all('div', class_='v-b-event')
+                events_count = len(all_events) if all_events else 0
+                
+                debug_msg = f'No reservations found for today ({today_day_name}, {today_month_name} {today_day_num})'
+                if found_date_texts:
+                    debug_msg += f'. Calendar shows dates: {", ".join(found_date_texts[:3])}'
+                if events_count > 0:
+                    debug_msg += f'. Found {events_count} total event(s) but none matched today.'
+                    # Show sample of what dates the events had
+                    if found_dates:
+                        debug_msg += f' Event dates checked: {", ".join(found_dates[:3])}'
+                else:
+                    debug_msg += f'. No events found in calendar (checked {events_found_count} events).'
+                if found_dates and events_count == 0:
+                    debug_msg += f' Debug: {", ".join(found_dates[:3])}'
+                
                 return {
                     'website': self.config['websites'][website_index].get('name', f'Website {website_index + 1}'),
                     'url': url,
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': self._get_est_timestamp(),
                     'courts': [],
                     'status': 'success',
-                    'message': f'No reservations found for today ({today_day_name}, {today_month_name} {today_day_num})'
+                    'message': debug_msg
                 }
             else:
                 return {
                     'website': self.config['websites'][website_index].get('name', f'Website {website_index + 1}'),
                     'url': url,
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': self._get_est_timestamp(),
                     'courts': [],
                     'status': 'success',
                     'message': f'Could not find calendar structure. Found {len(all_vb_divs)} v-b elements total. Make sure Selenium is installed and ChromeDriver is available. If using Selenium, ensure the "availability" tab was clicked.'
@@ -814,7 +975,7 @@ class CourtAvailabilityScraper:
                     return {
                         'website': self.config['websites'][0].get('name', 'Website 1'),
                         'url': url,
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': self._get_est_timestamp(),
                         'courts': [],
                         'status': 'error',
                         'message': 'Page returned an error. The URL may require authentication or the data parameter may have expired. Try opening the URL in a browser first.'
@@ -828,7 +989,7 @@ class CourtAvailabilityScraper:
                 return {
                     'website': self.config['websites'][0].get('name', 'Website 1'),
                     'url': url,
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': self._get_est_timestamp(),
                     'courts': [],
                     'status': 'error',
                     'message': 'Page returned an error. The URL may require authentication or the data parameter may have expired. Try opening the URL in a browser first.'
@@ -931,7 +1092,7 @@ class CourtAvailabilityScraper:
                     return {
                         'website': self.config['websites'][0].get('name', 'Website 1'),
                         'url': url,
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': self._get_est_timestamp(),
                         'courts': courts,
                         'status': 'success',
                         'message': f'Found {len(courts)} available time slot(s)'
@@ -962,7 +1123,7 @@ class CourtAvailabilityScraper:
                         return {
                             'website': self.config['websites'][0].get('name', 'Website 1'),
                             'url': url,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': self._get_est_timestamp(),
                             'courts': [],
                             'status': 'success',
                             'message': f'Found calendar structure with {len(day_cols)} day(s), but all time slots appear to be booked.'
@@ -971,7 +1132,7 @@ class CourtAvailabilityScraper:
                         return {
                             'website': self.config['websites'][0].get('name', 'Website 1'),
                             'url': url,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': self._get_est_timestamp(),
                             'courts': [],
                             'status': 'success',
                             'message': 'Found availability container but no day columns. Page structure may have changed.'
@@ -981,11 +1142,11 @@ class CourtAvailabilityScraper:
                     with open('debug_sample_1.html', 'w', encoding='utf-8') as f:
                         f.write(soup.prettify())
                     # If we have Knockout.js bindings, suggest using Selenium
-                    if 'Knockout.js' in debug_info or 'data-bind' in str(soup):
+                    if 'Knockout.js' in str(soup) or 'data-bind' in str(soup):
                         return {
                             'website': self.config['websites'][0].get('name', 'Website 1'),
                             'url': url,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': self._get_est_timestamp(),
                             'courts': [],
                             'status': 'success',
                             'message': f'Page uses JavaScript (Knockout.js) to render calendar. BeautifulSoup cannot execute JavaScript. Install Selenium: pip install selenium. HTML saved to debug_sample_1.html.'
@@ -994,16 +1155,16 @@ class CourtAvailabilityScraper:
                         return {
                             'website': self.config['websites'][0].get('name', 'Website 1'),
                             'url': url,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': self._get_est_timestamp(),
                             'courts': [],
                             'status': 'success',
-                            'message': f'Could not find calendar structure. HTML saved to debug_sample_1.html. {debug_info} The URL may be expired or require authentication.'
+                            'message': f'Could not find calendar structure. HTML saved to debug_sample_1.html. The URL may be expired or require authentication.'
                         }
             
             return {
                 'website': self.config['websites'][0].get('name', 'Website 1'),
                 'url': url,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': self._get_est_timestamp(),
                 'courts': courts,
                 'status': 'success',
                 'message': f'Found {len(courts)} available slot(s)'
@@ -1013,7 +1174,7 @@ class CourtAvailabilityScraper:
             return {
                 'website': self.config['websites'][0].get('name', 'Website 1'),
                 'url': url,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': self._get_est_timestamp(),
                 'courts': [],
                 'status': 'error',
                 'message': f'Error: {str(e)}'
@@ -1056,7 +1217,7 @@ class CourtAvailabilityScraper:
                     return {
                         'website': self.config['websites'][1].get('name', 'Website 2'),
                         'url': url,
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': self._get_est_timestamp(),
                         'courts': [],
                         'status': 'error',
                         'message': 'Page returned an error. The URL may require authentication or the data parameter may have expired. Try opening the URL in a browser first.'
@@ -1069,7 +1230,7 @@ class CourtAvailabilityScraper:
                 return {
                     'website': self.config['websites'][1].get('name', 'Website 2'),
                     'url': url,
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': self._get_est_timestamp(),
                     'courts': [],
                     'status': 'error',
                     'message': 'Page returned an error. The URL may require authentication or the data parameter may have expired. Try opening the URL in a browser first.'
@@ -1145,7 +1306,7 @@ class CourtAvailabilityScraper:
                     return {
                         'website': self.config['websites'][1].get('name', 'Website 2'),
                         'url': url,
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': self._get_est_timestamp(),
                         'courts': courts,
                         'status': 'success',
                         'message': f'Found {len(courts)} available time slot(s)'
@@ -1173,7 +1334,7 @@ class CourtAvailabilityScraper:
                         return {
                             'website': self.config['websites'][1].get('name', 'Website 2'),
                             'url': url,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': self._get_est_timestamp(),
                             'courts': [],
                             'status': 'success',
                             'message': f'Found calendar structure with {len(day_cols)} day(s), but all time slots appear to be booked.'
@@ -1182,7 +1343,7 @@ class CourtAvailabilityScraper:
                         return {
                             'website': self.config['websites'][1].get('name', 'Website 2'),
                             'url': url,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': self._get_est_timestamp(),
                             'courts': [],
                             'status': 'success',
                             'message': 'Found availability container but no day columns. Page structure may have changed.'
@@ -1193,7 +1354,7 @@ class CourtAvailabilityScraper:
                     return {
                         'website': self.config['websites'][1].get('name', 'Website 2'),
                         'url': url,
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': self._get_est_timestamp(),
                         'courts': [],
                         'status': 'success',
                         'message': f'Could not find calendar structure. HTML saved to debug_sample_2.html. {debug_info} The URL may be expired or require authentication.'
@@ -1202,7 +1363,7 @@ class CourtAvailabilityScraper:
             return {
                 'website': self.config['websites'][1].get('name', 'Website 2'),
                 'url': url,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': self._get_est_timestamp(),
                 'courts': courts,
                 'status': 'success',
                 'message': f'Found {len(courts)} available slot(s)'
@@ -1212,54 +1373,89 @@ class CourtAvailabilityScraper:
             return {
                 'website': self.config['websites'][1].get('name', 'Website 2'),
                 'url': url,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': self._get_est_timestamp(),
                 'courts': [],
                 'status': 'error',
                 'message': f'Error: {str(e)}'
             }
     
     def check_all_websites(self) -> List[Dict]:
-        """Check availability from all enabled websites (runs in parallel for speed)."""
+        """Check availability from all enabled websites (runs in parallel for speed with retries)."""
         enabled_sites = [(i, site_config) for i, site_config in enumerate(self.config['websites']) 
                         if site_config.get('enabled', True)]
         
         if not enabled_sites:
             return []
         
-        # Run scrapers in parallel using threads
+        # Run scrapers in parallel using threads with timeout
         results = [None] * len(self.config['websites'])
         threads = []
         
-        def scrape_worker(index: int, url: str):
-            """Worker function to scrape a single website."""
-            try:
-                if index == 0:
-                    result = self.scrape_website_1(url)
-                elif index == 1:
-                    result = self.scrape_website_2(url)
-                else:
-                    result = self.scrape_website_1(url)
-                results[index] = result
-            except Exception as e:
+        def scrape_worker(index: int, url: str, max_retries=2):
+            """Worker function to scrape a single website with retries."""
+            result = None
+            for attempt in range(max_retries + 1):
+                try:
+                    if index == 0:
+                        result = self.scrape_website_1(url)
+                    elif index == 1:
+                        result = self.scrape_website_2(url)
+                    else:
+                        result = self.scrape_website_1(url)
+                    
+                    # If we got a result (even if error), use it
+                    if result:
+                        results[index] = result
+                        return
+                except Exception as e:
+                    if attempt < max_retries:
+                        # Wait before retry with exponential backoff
+                        time.sleep(min(2 ** attempt, 3))
+                        continue
+                    # Last attempt failed, create error result
+                    result = {
+                        'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
+                        'url': url,
+                        'timestamp': self._get_est_timestamp(),
+                        'courts': [],
+                        'status': 'error',
+                        'message': f'Error after {max_retries + 1} attempts: {str(e)}'
+                    }
+            
+            # If we still don't have a result, create a default error
+            if not result:
                 results[index] = {
                     'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
                     'url': url,
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': self._get_est_timestamp(),
                     'courts': [],
                     'status': 'error',
-                    'message': f'Error: {str(e)}'
+                    'message': f'Failed to scrape after {max_retries + 1} attempts'
                 }
+            else:
+                results[index] = result
         
         # Start all scrapers in parallel
         for i, site_config in enabled_sites:
             url = site_config['url']
-            thread = threading.Thread(target=scrape_worker, args=(i, url))
+            thread = threading.Thread(target=scrape_worker, args=(i, url), daemon=True)
             thread.start()
-            threads.append(thread)
+            threads.append((thread, i, site_config))
         
-        # Wait for all threads to complete
-        for thread in threads:
-            thread.join()
+        # Wait for all threads to complete with timeout (60 seconds per thread)
+        timeout = 60
+        for thread, index, site_config in threads:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                # Thread timed out, create error result
+                results[index] = {
+                    'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
+                    'url': site_config['url'],
+                    'timestamp': self._get_est_timestamp(),
+                    'courts': [],
+                    'status': 'error',
+                    'message': f'Request timed out after {timeout} seconds'
+                }
         
         # Filter out None results and maintain order
         return [r for r in results if r is not None]
