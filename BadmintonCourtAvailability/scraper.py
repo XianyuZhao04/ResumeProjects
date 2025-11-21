@@ -1502,8 +1502,12 @@ class CourtAvailabilityScraper:
                 'message': f'Error: {str(e)}'
             }
     
-    def check_all_websites(self) -> List[Dict]:
-        """Check availability from all enabled websites (runs in parallel for speed with retries)."""
+    def check_all_websites(self, use_timeout: bool = True) -> List[Dict]:
+        """Check availability from all enabled websites (runs in parallel for speed with retries).
+        
+        Args:
+            use_timeout: If False, skip timeout enforcement (for background threads)
+        """
         enabled_sites = [(i, site_config) for i, site_config in enumerate(self.config['websites']) 
                         if site_config.get('enabled', True)]
         
@@ -1516,8 +1520,8 @@ class CourtAvailabilityScraper:
         
         results = [None] * len(self.config['websites'])
         
-        if is_cloud:
-            # In cloud: run sequentially with strict timeout (each court gets 10s, total ~20s for 2 courts)
+        if is_cloud and use_timeout:
+            # In cloud with timeout: run sequentially with strict timeout (each court gets 10s, total ~20s for 2 courts)
             timeout_per_court = 10  # 10s per court to stay well under 30s total
             for i, site_config in enabled_sites:
                 url = site_config['url']
@@ -1577,6 +1581,30 @@ class CourtAvailabilityScraper:
                 
                 if result:
                     results[i] = result
+        elif is_cloud and not use_timeout:
+            # In cloud without timeout (background thread): run sequentially with NO timeout
+            print("Scraper: Running in background mode (no timeout)", flush=True)
+            for i, site_config in enabled_sites:
+                url = site_config['url']
+                try:
+                    if i == 0:
+                        result = self.scrape_website_1(url)
+                    elif i == 1:
+                        result = self.scrape_website_2(url)
+                    else:
+                        result = self.scrape_website_1(url)
+                    results[i] = result
+                    print(f"Scraper: Court {i+1} completed: {result.get('status', 'unknown')}", flush=True)
+                except Exception as e:
+                    print(f"Scraper: Court {i+1} error: {str(e)}", flush=True)
+                    results[i] = {
+                        'website': self.config['websites'][i].get('name', f'Website {i + 1}'),
+                        'url': url,
+                        'timestamp': self._get_est_timestamp(),
+                        'courts': [],
+                        'status': 'error',
+                        'message': f'Error: {str(e)}'
+                    }
         else:
             # Local: run in parallel for speed
             threads = []

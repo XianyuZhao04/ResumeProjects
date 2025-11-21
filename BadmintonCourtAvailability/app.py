@@ -203,8 +203,8 @@ def refresh_cache_background():
                 print("Background: Creating scraper instance...", flush=True)
                 scraper = CourtAvailabilityScraper()
             
-            print("Background: Calling check_all_websites()...", flush=True)
-            results = scraper.check_all_websites()
+            print("Background: Calling check_all_websites() with NO timeout...", flush=True)
+            results = scraper.check_all_websites(use_timeout=False)  # No timeout in background!
             print(f"Background: Got results: {len(results) if results else 0} websites", flush=True)
             
             with cache_lock:
@@ -278,7 +278,7 @@ def get_availability():
                         print("Immediate build: Starting...", flush=True)
                         if scraper is None:
                             scraper = CourtAvailabilityScraper()
-                        results = scraper.check_all_websites()
+                        results = scraper.check_all_websites(use_timeout=False)  # No timeout in background!
                         with cache_lock:
                             cached_results = results
                             cache_timestamp = time.time()
