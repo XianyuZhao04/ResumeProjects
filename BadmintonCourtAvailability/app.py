@@ -2,7 +2,7 @@
 Simple local web app for checking badminton court availability.
 Run this and access from your iPhone on the same WiFi network.
 """
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, copy_current_request_context
 from scraper import CourtAvailabilityScraper
 from datetime import datetime
 import os
@@ -124,10 +124,11 @@ def timeout_handler(timeout_seconds=30):
                         'timestamp': get_est_timestamp()
                     }), 500
             
-            # Cloud: use threading timeout
+            # Cloud: use threading timeout with Flask app context
             result = [None]
             exception = [None]
             
+            @copy_current_request_context
             def target():
                 try:
                     result[0] = func(*args, **kwargs)
