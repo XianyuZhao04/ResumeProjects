@@ -107,7 +107,10 @@ class CourtAvailabilityScraper:
     
     def _scrape_with_selenium(self, url: str, website_index: int, retry_count: int = 0) -> Dict:
         """Scrape using Selenium to render JavaScript with improved stability."""
-        max_retries = 3  # Increased retries
+        # Use fewer retries in cloud to avoid timeouts
+        import os
+        is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+        max_retries = 1 if is_cloud else 3  # Fewer retries in cloud
         options = Options()
         options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
@@ -199,7 +202,10 @@ class CourtAvailabilityScraper:
                 # Check if session is still valid
                 _ = driver.current_url
                 # Use shorter timeout since we're using eager page load strategy
-                WebDriverWait(driver, 5).until(
+                import os
+                is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                page_load_timeout = 3 if is_cloud else 5
+                WebDriverWait(driver, page_load_timeout).until(
                     lambda d: d.execute_script('return document.readyState') in ['complete', 'interactive']
                 )
             except Exception as session_error:
@@ -244,29 +250,41 @@ class CourtAvailabilityScraper:
                         if availability_tab and availability_tab.is_displayed():
                             # Scroll into view and click
                             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", availability_tab)
-                            time.sleep(0.2)
+                            import os
+                            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                            scroll_wait = 0.1 if is_cloud else 0.2
+                            time.sleep(scroll_wait)
                             # Try JavaScript click first (more reliable)
                             try:
                                 driver.execute_script("arguments[0].click();", availability_tab)
                             except:
                                 availability_tab.click()
-                            time.sleep(1.0)  # Wait for tab content to load
-            
+                            # Wait for tab content to load (shorter in cloud)
+                            import os
+                            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                            wait_time = 0.6 if is_cloud else 1.0
+                            time.sleep(wait_time)
+                            
                             # Verify the tab was actually clicked by checking if calendar is visible
-                            try:
-                                # Check if the room-availability tab panel is now active
-                                tab_panel = driver.find_element(By.ID, "room-availability")
-                                is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
-                                if is_active:
-                                    tab_clicked = True
-                                else:
-                                    # Wait a bit more and check again
-                                    time.sleep(1.0)
+                            # Skip verification in cloud to save time
+                            if not is_cloud:
+                                try:
+                                    # Check if the room-availability tab panel is now active
+                                    tab_panel = driver.find_element(By.ID, "room-availability")
                                     is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
                                     if is_active:
                                         tab_clicked = True
-                            except:
-                                # Assume it worked and continue
+                                    else:
+                                        # Wait a bit more and check again
+                                        time.sleep(1.0)
+                                        is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
+                                        if is_active:
+                                            tab_clicked = True
+                                except:
+                                    # Assume it worked and continue
+                                    tab_clicked = True
+                            else:
+                                # In cloud, assume it worked
                                 tab_clicked = True
                             
                             if tab_clicked:
@@ -333,7 +351,11 @@ class CourtAvailabilityScraper:
             try:
                 # Check if session is still valid
                 _ = driver.current_url
-                WebDriverWait(driver, 10).until(
+                # Use shorter timeout in cloud
+                import os
+                is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+                wait_timeout = 5 if is_cloud else 10
+                WebDriverWait(driver, wait_timeout).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "v-b-date"))
                 )
                 calendar_found = True
@@ -515,15 +537,19 @@ class CourtAvailabilityScraper:
                         raise
                 pass
             
-            # Give time for events to load via AJAX
-            time.sleep(1.5)
+            # Give time for events to load via AJAX (shorter in cloud)
+            import os
+            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
+            ajax_wait = 1.0 if is_cloud else 1.5
+            time.sleep(ajax_wait)
             
             # Scroll to calendar area to trigger lazy loading if needed
             try:
                 _ = driver.current_url  # Validate session
                 calendar_element = driver.find_element(By.ID, "room-availability-control")
                 driver.execute_script("arguments[0].scrollIntoView(true);", calendar_element)
-                time.sleep(0.8)  # Wait after scrolling
+                scroll_wait = 0.5 if is_cloud else 0.8
+                time.sleep(scroll_wait)
             except Exception as e:
                 error_str = str(e).lower()
                 if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -536,9 +562,12 @@ class CourtAvailabilityScraper:
             
             # Try to wait for events specifically (but don't fail if none found)
             # Events may load asynchronously via AJAX, so wait a bit
+            import os
+            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
             try:
                 _ = driver.current_url  # Validate session
-                WebDriverWait(driver, 3).until(
+                event_wait_timeout = 2 if is_cloud else 3
+                WebDriverWait(driver, event_wait_timeout).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "v-b-event"))
                 )
             except Exception as e:
@@ -550,11 +579,13 @@ class CourtAvailabilityScraper:
                     else:
                         raise
                 # No events found - might be fully available or still loading
-                # Give a bit more time for AJAX to complete
-                time.sleep(1.0)
+                # Give a bit more time for AJAX to complete (shorter in cloud)
+                ajax_fallback = 0.5 if is_cloud else 1.0
+                time.sleep(ajax_fallback)
             
             # One more short wait to ensure everything is rendered
-            time.sleep(0.3)
+            final_wait = 0.2 if is_cloud else 0.3
+            time.sleep(final_wait)
             
             # Get the rendered HTML - check session first
             try:
@@ -1387,84 +1418,115 @@ class CourtAvailabilityScraper:
         if not enabled_sites:
             return []
         
-        # Run scrapers in parallel using threads with timeout
-        results = [None] * len(self.config['websites'])
-        threads = []
+        # Check if running in cloud - use sequential scraping to avoid timeouts
+        import os
+        is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
         
-        def scrape_worker(index: int, url: str, max_retries=1):
-            """Worker function to scrape a single website with retries."""
-            # Use fewer retries in cloud to avoid timeouts
-            import os
-            is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-            if is_cloud:
-                max_retries = 0  # No retries in cloud to save time
-            
-            result = None
-            for attempt in range(max_retries + 1):
+        results = [None] * len(self.config['websites'])
+        
+        if is_cloud:
+            # In cloud: run sequentially to avoid timeout (each court gets full timeout budget)
+            timeout_per_court = 20  # 20s per court, total ~40s for 2 courts
+            for i, site_config in enabled_sites:
+                url = site_config['url']
+                start_time = time.time()
                 try:
-                    if index == 0:
+                    if i == 0:
                         result = self.scrape_website_1(url)
-                    elif index == 1:
+                    elif i == 1:
                         result = self.scrape_website_2(url)
                     else:
                         result = self.scrape_website_1(url)
-                    
-                    # If we got a result (even if error), use it
-                    if result:
-                        results[index] = result
-                        return
+                    results[i] = result
                 except Exception as e:
-                    if attempt < max_retries:
-                        # Wait before retry with exponential backoff
-                        time.sleep(min(2 ** attempt, 3))
-                        continue
-                    # Last attempt failed, create error result
-                    result = {
+                    elapsed = time.time() - start_time
+                    if elapsed >= timeout_per_court:
+                        results[i] = {
+                            'website': self.config['websites'][i].get('name', f'Website {i + 1}'),
+                            'url': url,
+                            'timestamp': self._get_est_timestamp(),
+                            'courts': [],
+                            'status': 'error',
+                            'message': f'Request timed out after {timeout_per_court} seconds'
+                        }
+                    else:
+                        results[i] = {
+                            'website': self.config['websites'][i].get('name', f'Website {i + 1}'),
+                            'url': url,
+                            'timestamp': self._get_est_timestamp(),
+                            'courts': [],
+                            'status': 'error',
+                            'message': f'Error: {str(e)}'
+                        }
+        else:
+            # Local: run in parallel for speed
+            threads = []
+            
+            def scrape_worker(index: int, url: str, max_retries=1):
+                """Worker function to scrape a single website with retries."""
+                result = None
+                for attempt in range(max_retries + 1):
+                    try:
+                        if index == 0:
+                            result = self.scrape_website_1(url)
+                        elif index == 1:
+                            result = self.scrape_website_2(url)
+                        else:
+                            result = self.scrape_website_1(url)
+                        
+                        # If we got a result (even if error), use it
+                        if result:
+                            results[index] = result
+                            return
+                    except Exception as e:
+                        if attempt < max_retries:
+                            # Wait before retry with exponential backoff
+                            time.sleep(min(2 ** attempt, 3))
+                            continue
+                        # Last attempt failed, create error result
+                        result = {
+                            'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
+                            'url': url,
+                            'timestamp': self._get_est_timestamp(),
+                            'courts': [],
+                            'status': 'error',
+                            'message': f'Error after {max_retries + 1} attempts: {str(e)}'
+                        }
+                
+                # If we still don't have a result, create a default error
+                if not result:
+                    results[index] = {
                         'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
                         'url': url,
                         'timestamp': self._get_est_timestamp(),
                         'courts': [],
                         'status': 'error',
-                        'message': f'Error after {max_retries + 1} attempts: {str(e)}'
+                        'message': f'Failed to scrape after {max_retries + 1} attempts'
                     }
+                else:
+                    results[index] = result
             
-            # If we still don't have a result, create a default error
-            if not result:
-                results[index] = {
-                    'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
-                    'url': url,
-                    'timestamp': self._get_est_timestamp(),
-                    'courts': [],
-                    'status': 'error',
-                    'message': f'Failed to scrape after {max_retries + 1} attempts'
-                }
-            else:
-                results[index] = result
-        
-        # Start all scrapers in parallel
-        for i, site_config in enabled_sites:
-            url = site_config['url']
-            thread = threading.Thread(target=scrape_worker, args=(i, url), daemon=True)
-            thread.start()
-            threads.append((thread, i, site_config))
-        
-        # Wait for all threads to complete with timeout
-        # Use shorter timeout for cloud hosting to avoid hitting platform limits
-        import os
-        is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-        timeout = 40 if is_cloud else 60  # 40s for cloud, 60s for local
-        for thread, index, site_config in threads:
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                # Thread timed out, create error result
-                results[index] = {
-                    'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
-                    'url': site_config['url'],
-                    'timestamp': self._get_est_timestamp(),
-                    'courts': [],
-                    'status': 'error',
-                    'message': f'Request timed out after {timeout} seconds'
-                }
+            # Start all scrapers in parallel
+            for i, site_config in enabled_sites:
+                url = site_config['url']
+                thread = threading.Thread(target=scrape_worker, args=(i, url), daemon=True)
+                thread.start()
+                threads.append((thread, i, site_config))
+            
+            # Wait for all threads to complete with timeout
+            timeout = 60
+            for thread, index, site_config in threads:
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    # Thread timed out, create error result
+                    results[index] = {
+                        'website': self.config['websites'][index].get('name', f'Website {index + 1}'),
+                        'url': site_config['url'],
+                        'timestamp': self._get_est_timestamp(),
+                        'courts': [],
+                        'status': 'error',
+                        'message': f'Request timed out after {timeout} seconds'
+                    }
         
         # Filter out None results and maintain order
         return [r for r in results if r is not None]
