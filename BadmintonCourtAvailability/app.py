@@ -244,6 +244,12 @@ def get_availability():
     
     # In cloud: return cached results immediately, NEVER block on scraping
     if is_cloud:
+        # Check cache status inside lock to prevent race conditions
+        should_trigger_refresh = False
+        should_start_build = False
+        cache_age = float('inf')
+        stale_data = None
+        
         with cache_lock:
             cache_age = time.time() - cache_timestamp if cache_timestamp else float('inf')
             
@@ -257,56 +263,89 @@ def get_availability():
                     'cache_age_seconds': int(cache_age)
                 })
             
-            # If cache is stale but exists, return it anyway (background thread will refresh)
+            # If cache is stale but exists, return it anyway and trigger background refresh
             if cached_results is not None:
+                stale_data = cached_results  # Store data to return
+                # Trigger background refresh if not already building
+                if not cache_building:
+                    cache_building = True
+                    should_trigger_refresh = True
+                    print("API: Cache stale, triggering background refresh...", flush=True)
                 return jsonify({
                     'success': True,
-                    'data': cached_results,
+                    'data': stale_data,
                     'timestamp': get_est_timestamp(),
                     'cached': True,
                     'cache_age_seconds': int(cache_age),
-                    'refreshing': True
+                    'refreshing': should_trigger_refresh
                 })
             
             # No cache at all - trigger immediate build if not already building
             if not cache_building:
-                print("API: No cache found, triggering immediate background build...", flush=True)
                 cache_building = True
-                def build_cache_now():
-                    global scraper, cached_results, cache_timestamp, cache_building
-                    try:
-                        print("Immediate build: Starting...", flush=True)
-                        if scraper is None:
-                            scraper = CourtAvailabilityScraper()
-                        results = scraper.check_all_websites(use_timeout=False)  # No timeout in background!
-                        with cache_lock:
-                            cached_results = results
-                            cache_timestamp = time.time()
-                            cache_building = False
-                        print("Immediate build: Success!", flush=True)
-                    except Exception as e:
-                        import traceback
-                        print(f"Immediate build: ERROR - {str(e)}", flush=True)
-                        print(traceback.format_exc(), flush=True)
-                        with cache_lock:
-                            cache_building = False
-                            cached_results = [{
-                                'website': 'Error',
-                                'status': 'error',
-                                'message': f'Build failed: {str(e)}',
-                                'timestamp': get_est_timestamp()
-                            }]
-                            cache_timestamp = time.time()
-                
-                threading.Thread(target=build_cache_now, daemon=True).start()
+                should_start_build = True
+                print("API: No cache found, triggering immediate background build...", flush=True)
+        
+        # Start refresh thread outside the lock (if needed)
+        if should_trigger_refresh:
+            def refresh_cache_now():
+                global scraper, cached_results, cache_timestamp, cache_building
+                try:
+                    print("Stale cache refresh: Starting...", flush=True)
+                    if scraper is None:
+                        scraper = CourtAvailabilityScraper()
+                    results = scraper.check_all_websites(use_timeout=False)
+                    with cache_lock:
+                        cached_results = results
+                        cache_timestamp = time.time()
+                        cache_building = False
+                    print("Stale cache refresh: Success!", flush=True)
+                except Exception as e:
+                    import traceback
+                    print(f"Stale cache refresh: ERROR - {str(e)}", flush=True)
+                    print(traceback.format_exc(), flush=True)
+                    with cache_lock:
+                        cache_building = False
             
-            # Return message that cache is building
-            return jsonify({
-                'success': False,
-                'error': 'Cache is being built. This may take 20-30 seconds. Please wait and refresh.',
-                'timestamp': get_est_timestamp(),
-                'building': True
-            }), 202  # Accepted - request is being processed
+            threading.Thread(target=refresh_cache_now, daemon=True).start()
+        
+        # Start build thread outside the lock (if needed)
+        if should_start_build:
+            def build_cache_now():
+                global scraper, cached_results, cache_timestamp, cache_building
+                try:
+                    print("Immediate build: Starting...", flush=True)
+                    if scraper is None:
+                        scraper = CourtAvailabilityScraper()
+                    results = scraper.check_all_websites(use_timeout=False)  # No timeout in background!
+                    with cache_lock:
+                        cached_results = results
+                        cache_timestamp = time.time()
+                        cache_building = False
+                    print("Immediate build: Success!", flush=True)
+                except Exception as e:
+                    import traceback
+                    print(f"Immediate build: ERROR - {str(e)}", flush=True)
+                    print(traceback.format_exc(), flush=True)
+                    with cache_lock:
+                        cache_building = False
+                        cached_results = [{
+                            'website': 'Error',
+                            'status': 'error',
+                            'message': f'Build failed: {str(e)}',
+                            'timestamp': get_est_timestamp()
+                        }]
+                        cache_timestamp = time.time()
+            
+            threading.Thread(target=build_cache_now, daemon=True).start()
+        
+        # Return message that cache is building
+        return jsonify({
+            'success': False,
+            'error': 'Cache is being built. This may take 20-30 seconds. Please wait and refresh.',
+            'timestamp': get_est_timestamp(),
+            'building': True
+        }), 202  # Accepted - request is being processed
     
     # Local: no caching, scrape on demand
     try:
