@@ -319,15 +319,23 @@ class CourtAvailabilityScraper:
                                 driver.execute_script("arguments[0].click();", availability_tab)
                             except:
                                 availability_tab.click()
-                            # Wait for tab content to load (shorter in cloud)
+                            # Wait for tab content to load - longer in background mode
                             import os
                             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-                            wait_time = 0.3 if is_cloud else 1.0  # Very short in cloud
+                            is_background = not use_timeout
+                            
+                            if is_background:
+                                # Background mode: wait longer for tab to fully load
+                                wait_time = 3.0
+                            elif is_cloud:
+                                wait_time = 1.5  # Increased from 0.3s
+                            else:
+                                wait_time = 1.0
                             time.sleep(wait_time)
                             
                             # Verify the tab was actually clicked by checking if calendar is visible
-                            # Skip verification in cloud to save time
-                            if not is_cloud:
+                            # Always verify in background mode, skip in quick cloud mode
+                            if not is_cloud or is_background:
                                 try:
                                     # Check if the room-availability tab panel is now active
                                     tab_panel = driver.find_element(By.ID, "room-availability")
@@ -336,15 +344,28 @@ class CourtAvailabilityScraper:
                                         tab_clicked = True
                                     else:
                                         # Wait a bit more and check again
-                                        time.sleep(1.0)
+                                        time.sleep(2.0 if is_background else 1.0)
                                         is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
                                         if is_active:
                                             tab_clicked = True
                                 except:
-                                    # Assume it worked and continue
-                                    tab_clicked = True
+                                    # In background mode, try waiting more before giving up
+                                    if is_background:
+                                        time.sleep(2.0)
+                                        try:
+                                            tab_panel = driver.find_element(By.ID, "room-availability")
+                                            is_active = "active" in tab_panel.get_attribute("class") or tab_panel.is_displayed()
+                                            if is_active:
+                                                tab_clicked = True
+                                            else:
+                                                tab_clicked = True  # Assume it worked
+                                        except:
+                                            tab_clicked = True  # Assume it worked
+                                    else:
+                                        # Assume it worked and continue
+                                        tab_clicked = True
                             else:
-                                # In cloud, assume it worked
+                                # In quick cloud mode, assume it worked
                                 tab_clicked = True
                             
                             if tab_clicked:
@@ -601,10 +622,16 @@ class CourtAvailabilityScraper:
                         raise
                 pass
             
-            # Give time for events to load via AJAX (shorter in cloud)
+            # Give time for events to load via AJAX - longer in background mode
             import os
             is_cloud = os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('FLY_APP_NAME')
-            ajax_wait = 0.3 if is_cloud else 1.5  # Very short in cloud
+            is_background = not use_timeout
+            if is_background:
+                ajax_wait = 3.0  # Longer wait in background mode
+            elif is_cloud:
+                ajax_wait = 1.5  # Increased from 0.3s
+            else:
+                ajax_wait = 1.5
             time.sleep(ajax_wait)
             
             # Scroll to calendar area and try to navigate to today's date
@@ -612,12 +639,18 @@ class CourtAvailabilityScraper:
                 _ = driver.current_url  # Validate session
                 calendar_element = driver.find_element(By.ID, "room-availability-control")
                 driver.execute_script("arguments[0].scrollIntoView(true);", calendar_element)
-                scroll_wait = 0.2 if is_cloud else 0.8  # Very short in cloud
+                # Wait longer in background mode
+                if is_background:
+                    scroll_wait = 2.0
+                elif is_cloud:
+                    scroll_wait = 1.0  # Increased from 0.2s
+                else:
+                    scroll_wait = 0.8
                 time.sleep(scroll_wait)
                 
-                # In cloud: skip scrolling to today to save time - just parse whatever is visible
-                # In local: try to scroll to today for better accuracy
-                if not is_cloud:
+                # In background mode or local: scroll to today for better accuracy
+                # In quick cloud mode: skip to save time
+                if not is_cloud or is_background:
                     # Try to scroll calendar horizontally to find today's date
                     # The calendar might start showing future dates, so we need to scroll left
                     try:
@@ -644,7 +677,9 @@ class CourtAvailabilityScraper:
                                 if str(today_day_num) in date_text and today_day_name_short in date_text:
                                     # Found today! Scroll it into view
                                     driver.execute_script("arguments[0].scrollIntoView({block: 'nearest', inline: 'center'});", date_elem)
-                                    time.sleep(1.5)  # Wait for events to load after scrolling
+                                    # Wait longer in background mode for events to load after scrolling
+                                    wait_after_scroll = 3.0 if is_background else 1.5
+                                    time.sleep(wait_after_scroll)
                                     found_today = True
                                     break
                             except:
@@ -657,12 +692,18 @@ class CourtAvailabilityScraper:
                                 var container = arguments[0];
                                 container.scrollLeft = 0;
                             """, calendar_element)
-                            time.sleep(1.5)  # Wait for events to load after scrolling
+                            # Wait longer in background mode for events to load after scrolling
+                            wait_after_scroll = 3.0 if is_background else 1.5
+                            time.sleep(wait_after_scroll)
                     except:
                         pass  # If scrolling fails, continue anyway
                 else:
                     # In cloud: wait a bit for events to load after scrolling to calendar
-                    time.sleep(0.5)  # Give events time to load via AJAX
+                    is_background = not use_timeout
+                    if is_background:
+                        time.sleep(3.0)  # Longer wait in background mode
+                    else:
+                        time.sleep(1.5)  # Increased from 0.5s
             except Exception as e:
                 error_str = str(e).lower()
                 if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -723,7 +764,20 @@ class CourtAvailabilityScraper:
                 # In background mode (unlimited time), wait properly for events like local mode
                 if is_background:
                     events_found = False
-                    for attempt in range(5):  # More attempts since we have time
+                    # First, wait for network activity to complete
+                    try:
+                        _ = driver.current_url  # Validate session
+                        # Wait for jQuery to finish (if present)
+                        WebDriverWait(driver, 10).until(
+                            lambda d: d.execute_script('return typeof jQuery === "undefined" || jQuery.active == 0')
+                        )
+                    except:
+                        pass  # jQuery might not be present, that's okay
+                    
+                    # Wait a bit more for events to load
+                    time.sleep(2.0)
+                    
+                    for attempt in range(8):  # More attempts since we have time
                         try:
                             _ = driver.current_url  # Validate session
                             events_elements = driver.find_elements(By.CLASS_NAME, "v-b-event")
@@ -731,8 +785,8 @@ class CourtAvailabilityScraper:
                                 events_found = True
                                 print(f"Cloud background: Found {len(events_elements)} events on attempt {attempt + 1}", flush=True)
                                 break
-                            if attempt < 4:  # Don't wait on last attempt
-                                time.sleep(2.0)  # Wait longer since we have time
+                            if attempt < 7:  # Don't wait on last attempt
+                                time.sleep(3.0)  # Wait longer since we have time
                         except Exception as e:
                             error_str = str(e).lower()
                             if any(phrase in error_str for phrase in ["invalid session", "session id", "disconnected", "unable to connect"]):
@@ -741,12 +795,24 @@ class CourtAvailabilityScraper:
                                     return self._scrape_with_selenium(url, website_index, retry_count + 1)
                                 else:
                                     raise
-                            if attempt < 4:
-                                time.sleep(2.0)
-                    time.sleep(1.0)  # Final wait to ensure everything is rendered
+                            if attempt < 7:
+                                time.sleep(3.0)
+                    time.sleep(2.0)  # Final wait to ensure everything is rendered
+                    
+                    # After waiting for events, refresh page source to get latest HTML
+                    try:
+                        _ = driver.current_url  # Validate session
+                        html = driver.page_source
+                        # Re-parse to check if events are now in HTML
+                        temp_soup = BeautifulSoup(html, 'html.parser')
+                        events_in_html = temp_soup.find_all('div', class_='v-b-event')
+                        if events_in_html:
+                            print(f"Cloud background: Found {len(events_in_html)} events in HTML after waiting", flush=True)
+                    except:
+                        pass  # If refresh fails, continue with normal flow
                 else:
                     # Quick mode (with timeout): minimal wait
-                    time.sleep(0.8)  # Give AJAX time to load events
+                    time.sleep(1.5)  # Increased from 0.8s
             
             # Get the rendered HTML - check session first
             try:
@@ -1747,4 +1813,5 @@ class CourtAvailabilityScraper:
         
         # Filter out None results and maintain order
         return [r for r in results if r is not None]
+
 
