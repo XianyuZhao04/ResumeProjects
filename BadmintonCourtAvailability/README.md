@@ -1,156 +1,111 @@
-# 🏸 Badminton Court Availability
+# Badminton Court Availability
 
-A simple local web app to check badminton court availability from Pitt EMS system. Access it from your iPhone on the same WiFi network - no cloud deployment needed!
+A web app that shows a 7-day availability calendar for two badminton courts at Pitt's Recreation and Wellness Center. It calls the Pitt EMS booking system's internal API directly and displays reserved time slots by day, so you can quickly find open court time across the week.
 
-## ✨ Features
+Live demo: [badminton-court-availability.onrender.com](https://badminton-court-availability.onrender.com)
 
-- **📱 Mobile-Optimized**: Beautiful, touch-friendly interface designed for iPhone
-- **🔄 Auto-Refresh**: Automatically fetches data when the app launches and refreshes every 30 seconds
-- **⚡ Fast Loading**: Parallel scraping of multiple courts for faster data retrieval
-- **🔒 Shows Reserved Times**: Displays today's reserved time slots so you know when courts are unavailable
-- **🛑 Auto-Shutdown**: Automatically shuts down after 5 minutes of inactivity or when browser tab closes
-- **🎯 Today Only**: Filters to show only today's reservations for quick reference
+---
 
-## 🎯 What It Does
+## Features
 
-The app scrapes the Pitt EMS booking system to check availability for badminton courts. It:
+- 7-day week view with reservations grouped by day
+- Both courts selectable via tabs
+- Today highlighted and auto-scrolled into view
+- Auto-refreshes every 30 seconds
+- Mobile-optimized, accessible from your phone on the same WiFi (Might remove soon...)
+- Auto-shutdown after 5 minutes of inactivity (local mode only)
 
-1. **Fetches court data** from the EMS calendar system using Selenium (for JavaScript-rendered content)
-2. **Parses reserved time slots** from the calendar grid structure
-3. **Filters to today only** - shows only reservations for the current day
-4. **Displays results** in a clean, mobile-friendly interface
-5. **Auto-refreshes** to keep data up-to-date
+## How It Works
 
-You can access it from your iPhone on the same WiFi network - just open the IP address shown in the terminal!
+Rather than scraping the EMS web page with a browser, the app calls the internal JSON API that the EMS page itself uses (`AnonymousServersApi.aspx/GetLocationDetailsAvailability`). This returns a week's worth of bookings in one request with no authentication required. The room IDs for each court were discovered by intercepting browser network traffic.
 
-## 🚀 Quick Setup
+On Render, results are cached for 5 minutes and refreshed in the background. Locally, data is fetched on demand.
 
-### Step 1: Install Dependencies
+---
 
-```bash
-pip install -r requirements.txt
-```
+## Tech Stack
 
-This installs:
-- `flask` - Web framework
-- `selenium` - For JavaScript rendering
-- `webdriver-manager` - Automatic ChromeDriver management
-- `beautifulsoup4` - HTML parsing
-- `requests` - HTTP requests
+- Python, Flask
+- Requests (HTTP client)
+- Gunicorn (production server)
+- Docker (Render deployment)
 
-### Step 2: Verify URLs
+---
 
-1. Open both court URLs in your browser to make sure they work
-2. You should see a calendar grid showing availability
-3. If you see an error, you may need to:
-   - Log in to the EMS system first
-   - Get fresh URLs (the `data` parameter in the URL might expire)
+## Local Setup
 
-### Step 3: Configure Courts
+### Prerequisites
 
-1. Copy the example config file:
+- Python 3.11+
+
+### Steps
+
+1. Clone the repo and navigate into it:
+   ```bash
+   git clone <your-repo-url>
+   cd BadmintonCourtAvailability
+   ```
+
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   # Mac/Linux:
+   source venv/bin/activate
+   # Windows:
+   venv\Scripts\activate
+   ```
+
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Create your config file:
    ```bash
    cp config.example.json config.json
    ```
-   (Or create `config.json` manually)
+   Then open `config.json` and paste in the EMS URLs for each court.
 
-2. Edit `config.json` and add your court URLs:
-   ```json
-   {
-     "websites": [
-       {
-         "name": "Court 610A",
-         "url": "https://pitt.emscloudservice.com/web/LocationDetails.aspx?data=YOUR_URL_DATA_HERE",
-         "enabled": true
-       },
-       {
-         "name": "Court 610B",
-         "url": "https://pitt.emscloudservice.com/web/LocationDetails.aspx?data=YOUR_URL_DATA_HERE",
-         "enabled": true
-       }
-     ]
-   }
+5. Run the app:
+   ```bash
+   python app.py
    ```
 
-**Note**: `config.json` is in `.gitignore` to protect your URLs. Always use `config.example.json` as a template.
+6. Open the URL shown in the terminal. To access from your phone, make sure it's on the same WiFi network and use the IP address shown (e.g. `http://192.168.1.100:5000`). (Again, might be removed soon...)
 
-### Step 4: Run the App
+### Updating Court URLs
 
-```bash
-python app.py
+The `data=` token in each URL may expire over time. If the app stops working, go to the EMS booking page for each court in your browser, copy the full URL, and update `config.json`.
+
+---
+
+## Configuration
+
+`config.json` (gitignored) follows this structure:
+
+```json
+{
+  "websites": [
+    {
+      "name": "Court 610A",
+      "url": "https://pitt.emscloudservice.com/web/LocationDetails.aspx?data=...",
+      "enabled": true
+    },
+    {
+      "name": "Court 610B",
+      "url": "https://pitt.emscloudservice.com/web/LocationDetails.aspx?data=...",
+      "enabled": true
+    }
+  ]
+}
 ```
 
-The app will start and display:
-```
-🏸 Badminton Court Availability
-============================================================
+Set `enabled` to `false` to skip a court without removing it from the config.
 
-📱 To access from your iPhone:
-   1. Make sure your phone is on the same WiFi network
-   2. Open Safari and go to: http://192.168.1.100:5000
+The room IDs used by the API (`456` for 610A, `457` for 610B) are *hardcoded* in `scraper.py`. If courts change, these can be rediscovered by opening the EMS page in a browser, clicking the Availability tab, and inspecting the network request to `GetLocationDetailsAvailability`.
 
-💻 Or access locally at: http://localhost:5000
+---
 
-⏹️  Server will auto-shutdown after 5 minutes of inactivity
-   (or when you close the browser tab)
-```
+## Notes
 
-### Step 5: Access from Your iPhone
-
-1. Make sure your iPhone is on the **same WiFi network** as your computer
-2. Open Safari on your iPhone
-3. Go to the IP address shown (e.g., `http://192.168.1.100:5000`)
-4. **Optional**: Tap Share → "Add to Home Screen" to create an app icon
-
-## 📱 What You'll See
-
-The app displays:
-- **Court name** (610A or 610B)
-- **Reserved time slots** for today in format: "10:30 AM to 11:45 AM (Event Name)"
-- **Status indicator** (✓ Connected or ✗ Error)
-- **Last update timestamp**
-- **Message** indicating if no reservations were found (court is available!)
-
-Each reserved slot shows the time range and event name. If no reservations are shown, the court is available for the day!
-
-## 🔧 How It Works
-
-### Scraping Process
-
-The scraper uses Selenium to render JavaScript-heavy pages:
-
-1. **Launches headless Chrome** to render the EMS calendar
-2. **Clicks the "availability" tab** to show the calendar view
-3. **Waits for calendar to load** - finds the `v-b-date` elements
-4. **Parses reserved events** - extracts `v-b-event` divs with time ranges from `aria-label` attributes
-5. **Filters to today** - matches events to today's date
-6. **Returns results** - shows only today's reserved time slots
-
-### Technical Details
-
-The scraper looks for:
-- `v-b-date` - Date headers in the calendar
-- `v-b-event` - Reserved time slot divs
-- `aria-label` attributes - Contains event name and time range (e.g., "Event Name10:30 AM To 11:45 AM")
-- `v-b-cal-column` - Day columns in the calendar grid
-
-### Parallel Processing
-
-Both courts are scraped **simultaneously** using threading, making the app load faster.
-
-## 🔄 Updating URLs
-
-If the URLs expire or you need to change them:
-
-1. Go to the EMS booking system
-2. Navigate to each court's availability page
-3. Copy the full URL from the address bar
-4. Update `config.json` with the new URLs
-
-The URLs contain encoded data that may expire, so you might need to refresh them periodically.
-
-## 📄 License
-
-This is a personal project for checking badminton court availability. Use at your own discretion.
-This project was developed with the assistance of AI tools for coding support.
-I am currently hosting this app on [render.com](https://render.com/), feel free to check it out [here](https://badminton-court-availability.onrender.com).
+- This project was developed with the assistance of AI tools.
